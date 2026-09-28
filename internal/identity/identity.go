@@ -147,6 +147,17 @@ func LoadDevices(ks keystore.Store) (*Devices, error) {
 	return d, nil
 }
 
+// Reload re-reads the registry, so a long-running relay sees phones that
+// `flow-remote pair` enrolled after it started, and revocations.
+func (d *Devices) Reload() error {
+	fresh, err := LoadDevices(d.ks)
+	if err != nil {
+		return err
+	}
+	d.byID = fresh.byID
+	return nil
+}
+
 // Active returns the device if it's enrolled and not revoked.
 func (d *Devices) Active(id string) (Device, bool) {
 	dev, ok := d.byID[id]

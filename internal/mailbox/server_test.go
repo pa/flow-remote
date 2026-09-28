@@ -108,7 +108,7 @@ func (r *rig) enrollment(o pairing.Offer) *envelope.Envelope {
 func (r *rig) pair() {
 	r.t.Helper()
 	ctx := context.Background()
-	if err := r.relay.Register(ctx, setupToken); err != nil {
+	if err := r.relay.Register(ctx, setupToken, ""); err != nil {
 		r.t.Fatalf("register: %v", err)
 	}
 	o := pairing.NewOffer(r.mac, "", r.clk.Now())
@@ -265,7 +265,7 @@ func TestRevokedDeviceIsRejected(t *testing.T) {
 func TestRegistration(t *testing.T) {
 	r := newRig(t)
 	ctx := context.Background()
-	if err := r.relay.Register(ctx, "wrong-token-wrong-token-xx"); err == nil {
+	if err := r.relay.Register(ctx, "wrong-token-wrong-token-xx", ""); err == nil {
 		t.Fatal("wrong token accepted")
 	}
 	// The right token, but the request is signed by a different key than
@@ -278,22 +278,22 @@ func TestRegistration(t *testing.T) {
 	if resp, _ := http.DefaultClient.Do(req); resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("registration signed by another key = %d", resp.StatusCode)
 	}
-	if err := r.relay.Register(ctx, setupToken); err != nil {
+	if err := r.relay.Register(ctx, setupToken, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.relay.Register(ctx, setupToken); err != nil {
+	if err := r.relay.Register(ctx, setupToken, ""); err != nil {
 		t.Fatalf("re-registering the same key: %v", err)
 	}
 	// Another key can't take over the same mac id.
 	other.ID = r.mac.ID
-	if err := (&client.Client{BaseURL: r.srv.URL, Mac: other, Now: r.clk.Now}).Register(ctx, setupToken); err == nil {
+	if err := (&client.Client{BaseURL: r.srv.URL, Mac: other, Now: r.clk.Now}).Register(ctx, setupToken, ""); err == nil {
 		t.Fatal("mac id taken over")
 	}
 
 	// A mailbox with no token accepts no registrations at all.
 	closed := httptest.NewServer((&mailbox.Server{Store: mailbox.NewMemory()}).Handler())
 	defer closed.Close()
-	if err := (&client.Client{BaseURL: closed.URL, Mac: r.mac}).Register(ctx, ""); err == nil {
+	if err := (&client.Client{BaseURL: closed.URL, Mac: r.mac}).Register(ctx, "", ""); err == nil {
 		t.Fatal("registration with no token configured")
 	}
 }

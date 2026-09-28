@@ -1,6 +1,11 @@
-// Package mailbox is the Cloud Run service between the phone and the Mac.
-// It stores sealed envelopes until the recipient acks them or they expire.
-// It can't read them, and it doesn't need to trust anything inside them.
+// Package mailbox is the Cloud Run service between phones and Macs. It
+// stores sealed envelopes until the recipient acks them or they expire. It
+// can't read them, and it doesn't need to trust anything inside them.
+//
+// Each Mac is a tenant, identified by its key, the way an account is a key
+// pair in Happier. A phone belongs to the Mac that enrolled it and can only
+// reach that Mac; a Mac can only manage its own phones. Your other Macs and
+// other people's Macs are separate by construction.
 package mailbox
 
 import (
@@ -16,12 +21,13 @@ import (
 const (
 	Retention = envelope.Retention
 	PairTTL   = 2 * time.Minute
+	InviteTTL = 24 * time.Hour
 )
 
 var (
 	ErrExists   = errors.New("mailbox: already exists")
 	ErrNotFound = errors.New("mailbox: not found")
-	ErrConflict = errors.New("mailbox: registered with a different key")
+	ErrConflict = errors.New("mailbox: registered with a different key or owner")
 )
 
 // Record is an envelope plus what the mailbox knows about it.
@@ -33,65 +39,92 @@ type Record struct {
 	ExpiresAt  time.Time         `json:"-" bson:"expires_at"`
 }
 
+// Mac is a tenant.
+type Mac struct {
+	ID      string    `json:"id"`
+	SignPub string    `json:"-"`
+	Admin   bool      `json:"admin"` // may create invites and remove tenants
+	Created time.Time `json:"created"`
+}
+
+// Device is a phone enrolled by one Mac.
+type Device struct {
+	SignPub string
+	Owner   string // the mac id that enrolled it
+}
+
 type Store interface {
-	// PutEnvelope stores an envelope; ErrExists if its id is already stored.
 	PutEnvelope(ctx context.Context, e envelope.Envelope, now time.Time) error
 	// ListEnvelopes returns up to limit envelopes for to, oldest first.
 	ListEnvelopes(ctx context.Context, to string, limit int, now time.Time) ([]Record, error)
 	// Ack deletes envelopes for to by id. Ids for someone else are ignored.
 	Ack(ctx context.Context, to string, ids []string) error
 
-	// OpenPair makes a slot the phone may post one enrollment into. Only
-	// the Mac opens slots, so a stranger can't post enrollments at will.
-	OpenPair(ctx context.Context, pairID string, now time.Time) error
-	// PutPair fills an open, empty slot: ErrNotFound if there's no open
-	// slot, ErrExists if it's already filled.
+	// OpenPair makes a slot, owned by macID, that a phone may post one
+	// enrollment into.
+	OpenPair(ctx context.Context, pairID, macID string, now time.Time) error
+	// PutPair fills an open, empty slot whose owner is e.To: ErrNotFound
+	// if there's no such slot, ErrExists if it's already filled.
 	PutPair(ctx context.Context, pairID string, e envelope.Envelope, now time.Time) error
-	// TakePair returns and deletes a filled slot; ErrNotFound while empty.
-	TakePair(ctx context.Context, pairID string, now time.Time) (envelope.Envelope, error)
+	// TakePair returns and deletes a filled slot owned by macID.
+	TakePair(ctx context.Context, pairID, macID string, now time.Time) (envelope.Envelope, error)
 
-	// RegisterMac binds a mac id to its sign key, first come first served.
-	RegisterMac(ctx context.Context, macID, signPub string) error
-	MacKey(ctx context.Context, macID string) (string, error)
+	// RegisterMac binds a mac id to its key, first come first served.
+	RegisterMac(ctx context.Context, m Mac) error
+	GetMac(ctx context.Context, macID string) (Mac, error)
+	ListMacs(ctx context.Context) ([]Mac, error)
+	// RemoveMac deletes a tenant: the Mac, its devices, and their queues.
+	RemoveMac(ctx context.Context, macID string) error
 
-	// PutDevice registers a phone's sign key; ErrConflict for a known id
-	// with another key, or a revoked id.
-	PutDevice(ctx context.Context, deviceID, signPub string) error
-	RevokeDevice(ctx context.Context, deviceID string) error
-	// DeviceKey returns an active device's key; ErrNotFound if unknown or revoked.
-	DeviceKey(ctx context.Context, deviceID string) (string, error)
+	// CreateInvite stores an invite by the hash of its code.
+	CreateInvite(ctx context.Context, hash, createdBy string, now time.Time) error
+	// UseInvite consumes an unexpired invite; ErrNotFound otherwise.
+	UseInvite(ctx context.Context, hash string, now time.Time) error
 
-	// Touch and LastSeen track presence ("mac:<id>", "phone").
+	// PutDevice registers a phone for owner; ErrConflict if the id is known
+	// with another key or owner, or is revoked.
+	PutDevice(ctx context.Context, owner, deviceID, signPub string) error
+	// RevokeDevice revokes a device of owner's; ErrNotFound if it isn't theirs.
+	RevokeDevice(ctx context.Context, owner, deviceID string) error
+	// GetDevice returns an active device; ErrNotFound if unknown or revoked.
+	GetDevice(ctx context.Context, deviceID string) (Device, error)
+
+	// Touch and LastSeen track presence: "mac:<id>", "phone:<mac id>".
 	Touch(ctx context.Context, who string, now time.Time) error
 	LastSeen(ctx context.Context, who string) (time.Time, error)
 
-	// DeleteExpired removes envelopes and pairings past their expiry.
+	// DeleteExpired removes envelopes, pairings and invites past expiry.
 	DeleteExpired(ctx context.Context, now time.Time) (int, error)
 }
 
 // Memory is a Store for local runs and tests.
 type Memory struct {
-	mu    sync.Mutex
-	seq   int64
-	envs  map[string]Record // by envelope id
-	pairs map[string]pairSlot
-	macs  map[string]string
-	devs  map[string]device
-	seen  map[string]time.Time
+	mu      sync.Mutex
+	seq     int64
+	envs    map[string]Record // by envelope id
+	pairs   map[string]pairSlot
+	macs    map[string]Mac
+	devs    map[string]device
+	invites map[string]time.Time // hash -> expiry
+	seen    map[string]time.Time
 }
 
 type pairSlot struct {
+	owner     string
 	env       *envelope.Envelope // nil while open and empty
 	expiresAt time.Time
 }
 
 type device struct {
-	signPub string
-	revoked bool
+	signPub, owner string
+	revoked        bool
 }
 
 func NewMemory() *Memory {
-	return &Memory{envs: map[string]Record{}, pairs: map[string]pairSlot{}, macs: map[string]string{}, devs: map[string]device{}, seen: map[string]time.Time{}}
+	return &Memory{
+		envs: map[string]Record{}, pairs: map[string]pairSlot{}, macs: map[string]Mac{},
+		devs: map[string]device{}, invites: map[string]time.Time{}, seen: map[string]time.Time{},
+	}
 }
 
 func (m *Memory) PutEnvelope(_ context.Context, e envelope.Envelope, now time.Time) error {
@@ -132,13 +165,13 @@ func (m *Memory) Ack(_ context.Context, to string, ids []string) error {
 	return nil
 }
 
-func (m *Memory) OpenPair(_ context.Context, pairID string, now time.Time) error {
+func (m *Memory) OpenPair(_ context.Context, pairID, macID string, now time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.pairs[pairID]; ok {
 		return ErrExists
 	}
-	m.pairs[pairID] = pairSlot{expiresAt: now.Add(PairTTL)}
+	m.pairs[pairID] = pairSlot{owner: macID, expiresAt: now.Add(PairTTL)}
 	return nil
 }
 
@@ -146,7 +179,7 @@ func (m *Memory) PutPair(_ context.Context, pairID string, e envelope.Envelope, 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	slot, ok := m.pairs[pairID]
-	if !ok || !now.Before(slot.expiresAt) {
+	if !ok || slot.owner != e.To || !now.Before(slot.expiresAt) {
 		return ErrNotFound
 	}
 	if slot.env != nil {
@@ -157,70 +190,134 @@ func (m *Memory) PutPair(_ context.Context, pairID string, e envelope.Envelope, 
 	return nil
 }
 
-func (m *Memory) TakePair(_ context.Context, pairID string, now time.Time) (envelope.Envelope, error) {
+func (m *Memory) TakePair(_ context.Context, pairID, macID string, now time.Time) (envelope.Envelope, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	slot, ok := m.pairs[pairID]
-	if !ok || slot.env == nil || !now.Before(slot.expiresAt) {
+	if !ok || slot.owner != macID || slot.env == nil || !now.Before(slot.expiresAt) {
 		return envelope.Envelope{}, ErrNotFound
 	}
 	delete(m.pairs, pairID)
 	return *slot.env, nil
 }
 
-func (m *Memory) RegisterMac(_ context.Context, macID, signPub string) error {
+func (m *Memory) RegisterMac(_ context.Context, mac Mac) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if cur, ok := m.macs[macID]; ok {
-		if cur != signPub {
+	if cur, ok := m.macs[mac.ID]; ok {
+		if cur.SignPub != mac.SignPub {
 			return ErrConflict
 		}
-		return nil
+		return ErrExists
 	}
-	m.macs[macID] = signPub
+	m.macs[mac.ID] = mac
 	return nil
 }
 
-func (m *Memory) MacKey(_ context.Context, macID string) (string, error) {
+func (m *Memory) GetMac(_ context.Context, macID string) (Mac, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	k, ok := m.macs[macID]
+	mac, ok := m.macs[macID]
 	if !ok {
-		return "", ErrNotFound
+		return Mac{}, ErrNotFound
 	}
-	return k, nil
+	return mac, nil
 }
 
-func (m *Memory) PutDevice(_ context.Context, deviceID, signPub string) error {
+func (m *Memory) ListMacs(_ context.Context) ([]Mac, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]Mac, 0, len(m.macs))
+	for _, mac := range m.macs {
+		out = append(out, mac)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Created.Before(out[j].Created) })
+	return out, nil
+}
+
+func (m *Memory) RemoveMac(_ context.Context, macID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.macs[macID]; !ok {
+		return ErrNotFound
+	}
+	delete(m.macs, macID)
+	gone := map[string]bool{macID: true}
+	for id, d := range m.devs {
+		if d.owner == macID {
+			gone[id] = true
+			// Keep the id, revoked, so it can't be re-registered.
+			d.revoked = true
+			m.devs[id] = d
+		}
+	}
+	for id, r := range m.envs {
+		if gone[r.To] {
+			delete(m.envs, id)
+		}
+	}
+	for id, s := range m.pairs {
+		if s.owner == macID {
+			delete(m.pairs, id)
+		}
+	}
+	return nil
+}
+
+func (m *Memory) CreateInvite(_ context.Context, hash, _ string, now time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.invites[hash]; ok {
+		return ErrExists
+	}
+	m.invites[hash] = now.Add(InviteTTL)
+	return nil
+}
+
+func (m *Memory) UseInvite(_ context.Context, hash string, now time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	exp, ok := m.invites[hash]
+	if !ok || !now.Before(exp) {
+		return ErrNotFound
+	}
+	delete(m.invites, hash)
+	return nil
+}
+
+func (m *Memory) PutDevice(_ context.Context, owner, deviceID, signPub string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if d, ok := m.devs[deviceID]; ok {
-		if d.revoked || d.signPub != signPub {
+		if d.revoked || d.signPub != signPub || d.owner != owner {
 			return ErrConflict
 		}
 		return nil
 	}
-	m.devs[deviceID] = device{signPub: signPub}
+	m.devs[deviceID] = device{signPub: signPub, owner: owner}
 	return nil
 }
 
-func (m *Memory) RevokeDevice(_ context.Context, deviceID string) error {
+func (m *Memory) RevokeDevice(_ context.Context, owner, deviceID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	d := m.devs[deviceID]
+	d, ok := m.devs[deviceID]
+	if !ok || d.owner != owner {
+		return ErrNotFound
+	}
 	d.revoked = true
 	m.devs[deviceID] = d
 	return nil
 }
 
-func (m *Memory) DeviceKey(_ context.Context, deviceID string) (string, error) {
+func (m *Memory) GetDevice(_ context.Context, deviceID string) (Device, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	d, ok := m.devs[deviceID]
 	if !ok || d.revoked {
-		return "", ErrNotFound
+		return Device{}, ErrNotFound
 	}
-	return d.signPub, nil
+	return Device{SignPub: d.signPub, Owner: d.owner}, nil
 }
 
 func (m *Memory) Touch(_ context.Context, who string, now time.Time) error {
@@ -249,6 +346,12 @@ func (m *Memory) DeleteExpired(_ context.Context, now time.Time) (int, error) {
 	for id, r := range m.pairs {
 		if !now.Before(r.expiresAt) {
 			delete(m.pairs, id)
+			n++
+		}
+	}
+	for h, exp := range m.invites {
+		if !now.Before(exp) {
+			delete(m.invites, h)
 			n++
 		}
 	}

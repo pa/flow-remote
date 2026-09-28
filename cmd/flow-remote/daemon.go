@@ -57,7 +57,7 @@ func agentStart() error {
 		return err
 	}
 	if strings.Contains(bin, "/go-build") {
-		return errors.New("run `relay start` from an installed binary (go install ./cmd/relay), not `go run`")
+		return errors.New("run `flow-remote start` from an installed binary (go install ./cmd/flow-remote), not `go run`")
 	}
 	var buf bytes.Buffer
 	if err := plistTmpl.Execute(&buf, map[string]string{
@@ -92,14 +92,14 @@ func agentStop() error {
 	if err := os.Remove(agentPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	fmt.Println("relay stopped and removed from login items. `relay start` brings it back.")
+	fmt.Println("relay stopped and removed from login items. `flow-remote start` brings it back.")
 	return nil
 }
 
 func agentStatus() error {
 	out, err := exec.Command("launchctl", "print", domain()+"/"+agentLabel).CombinedOutput()
 	if err != nil {
-		fmt.Println("relay agent: not installed (`relay start` installs it)")
+		fmt.Println("relay agent: not installed (`flow-remote start` installs it)")
 	} else {
 		state, pid := "unknown", "-"
 		for _, line := range strings.Split(string(out), "\n") {
@@ -139,7 +139,7 @@ func lockRun() (release func(), err error) {
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		f.Close()
-		return nil, errors.New("another relay is already running (check `relay status`, or stop the other one first)")
+		return nil, errors.New("another relay is already running (check `flow-remote status`, or stop the other one first)")
 	}
 	f.Truncate(0)
 	fmt.Fprintf(f, "%d\n", os.Getpid())

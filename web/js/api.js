@@ -1,17 +1,16 @@
 // The phone's side of the mailbox API. Nobody signs in: after pairing,
-// every request is signed with the device key, byte for byte the way
-// internal/reqsig does it in Go. Pairing itself is the one unsigned call.
-// The app and mailbox share an origin, so paths are relative.
+// every request is signed with that pairing's device key, byte for byte the
+// way internal/reqsig does it in Go. Pairing itself is the one unsigned
+// call. The app and mailbox share an origin, so paths are relative.
+//
+// Each call takes its signer ({id, key}) explicitly. A phone paired with
+// several Macs has one device key per Mac, and a shared "current signer"
+// could sign one tenant's request with another's key when a poll and a
+// send overlap.
 import { b64u } from "./envelope.js";
 
 const subtle = globalThis.crypto.subtle;
 const enc = new TextEncoder();
-
-let signer = null; // {id, key}
-
-export function setSigner(id, key) {
-  signer = id && key ? { id, key } : null;
-}
 
 export class ApiError extends Error {
   constructor(status, message) {
@@ -33,13 +32,10 @@ export async function signHeaders(method, path, body, id, key, ts = Date.now()) 
   return { "X-FR-Key": id, "X-FR-TS": String(ts), "X-FR-Sig": b64u(sig) };
 }
 
-async function call(method, path, body, { signed = true } = {}) {
+async function call(signer, method, path, body) {
   const raw = body ? enc.encode(JSON.stringify(body)) : new Uint8Array();
   const headers = body ? { "Content-Type": "application/json" } : {};
-  if (signed) {
-    if (!signer) throw new ApiError(0, "not paired");
-    Object.assign(headers, await signHeaders(method, path, raw, signer.id, signer.key));
-  }
+  if (signer) Object.assign(headers, await signHeaders(method, path, raw, signer.id, signer.key));
   const res = await fetch(path, { method, headers, body: body ? raw : undefined, cache: "no-store" });
   if (!res.ok) {
     let msg = `${res.status}`;
@@ -49,9 +45,10 @@ async function call(method, path, body, { signed = true } = {}) {
   return res.status === 204 || res.status === 202 ? null : res.json();
 }
 
-export const postPair = (pairId, env) =>
-  call("POST", `/v1/pair/${encodeURIComponent(pairId)}`, env, { signed: false });
-export const postEnvelope = (env) => call("POST", "/v1/envelopes", env);
-export const listEnvelopes = () => call("GET", "/v1/envelopes");
-export const ack = (ids) => call("POST", "/v1/ack", { ids });
-export const status = (macId) => call("GET", `/v1/status?mac=${encodeURIComponent(macId)}`);
+export const signerFor = (pairing) => ({ id: pairing.device_id, key: pairing.keys.sign.privateKey });
+
+export const postPair = (pairId, env) => call(null, "POST", `/v1/pair/${encodeURIComponent(pairId)}`, env);
+export const postEnvelope = (signer, env) => call(signer, "POST", "/v1/envelopes", env);
+export const listEnvelopes = (signer) => call(signer, "GET", "/v1/envelopes");
+export const ack = (signer, ids) => call(signer, "POST", "/v1/ack", { ids });
+export const status = (signer) => call(signer, "GET", "/v1/status");

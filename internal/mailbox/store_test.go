@@ -15,11 +15,12 @@ import (
 func contract(t *testing.T, s Store) {
 	ctx := context.Background()
 	now := time.Now().Truncate(time.Millisecond) // Mongo stores milliseconds
-	env := func(to string) envelope.Envelope {
-		return envelope.Envelope{V: 1, ID: envelope.NewID(), From: "dev-a", To: to, TS: now.UnixMilli(), EPK: "e", CT: "c", Sig: "s"}
+	env := func(from, to string) envelope.Envelope {
+		return envelope.Envelope{V: 1, ID: envelope.NewID(), From: from, To: to, TS: now.UnixMilli(), EPK: "e", CT: "c", Sig: "s"}
 	}
 
-	a, b, other := env("mac-1"), env("mac-1"), env("mac-2")
+	// Envelopes.
+	a, b, other := env("dev-a", "mac-1"), env("dev-a", "mac-1"), env("dev-b", "mac-2")
 	for _, e := range []envelope.Envelope{a, b, other} {
 		if err := s.PutEnvelope(ctx, e, now); err != nil {
 			t.Fatal(err)
@@ -38,8 +39,6 @@ func contract(t *testing.T, s Store) {
 	if recs, _ := s.ListEnvelopes(ctx, "mac-1", 1, now); len(recs) != 1 {
 		t.Fatalf("limit ignored: %d", len(recs))
 	}
-
-	// Ack only deletes the caller's own envelopes.
 	if err := s.Ack(ctx, "mac-1", []string{a.ID, other.ID}); err != nil {
 		t.Fatal(err)
 	}
@@ -50,95 +49,150 @@ func contract(t *testing.T, s Store) {
 		t.Fatal("ack deleted another recipient's envelope")
 	}
 
-	// Pairing slots: opened by the Mac, filled once by the phone, taken once.
-	p := env("mac-1")
+	// Pairing slots: opened by a Mac, filled once, taken once, by that Mac only.
+	p := env("dev-p", "mac-1")
 	if err := s.PutPair(ctx, "pair-1", p, now); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("put into unopened slot = %v", err)
 	}
-	if err := s.OpenPair(ctx, "pair-1", now); err != nil {
+	if err := s.OpenPair(ctx, "pair-1", "mac-1", now); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.OpenPair(ctx, "pair-1", now); !errors.Is(err, ErrExists) {
+	if err := s.OpenPair(ctx, "pair-1", "mac-1", now); !errors.Is(err, ErrExists) {
 		t.Fatalf("second open = %v", err)
 	}
-	if _, err := s.TakePair(ctx, "pair-1", now); !errors.Is(err, ErrNotFound) {
+	if err := s.PutPair(ctx, "pair-1", env("dev-p", "mac-2"), now); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("enrollment for another Mac accepted into mac-1's slot: %v", err)
+	}
+	if _, err := s.TakePair(ctx, "pair-1", "mac-1", now); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("take from empty slot = %v", err)
 	}
 	if err := s.PutPair(ctx, "pair-1", p, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutPair(ctx, "pair-1", env("mac-1"), now); !errors.Is(err, ErrExists) {
+	if err := s.PutPair(ctx, "pair-1", env("dev-q", "mac-1"), now); !errors.Is(err, ErrExists) {
 		t.Fatalf("second put = %v", err)
 	}
-	got, err := s.TakePair(ctx, "pair-1", now)
+	if _, err := s.TakePair(ctx, "pair-1", "mac-2", now); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("another Mac took the slot: %v", err)
+	}
+	got, err := s.TakePair(ctx, "pair-1", "mac-1", now)
 	if err != nil || got.ID != p.ID {
 		t.Fatalf("take = %+v, %v", got, err)
 	}
-	if _, err := s.TakePair(ctx, "pair-1", now); !errors.Is(err, ErrNotFound) {
+	if _, err := s.TakePair(ctx, "pair-1", "mac-1", now); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("second take = %v", err)
 	}
-	s.OpenPair(ctx, "pair-2", now)
+	s.OpenPair(ctx, "pair-2", "mac-1", now)
 	if err := s.PutPair(ctx, "pair-2", p, now.Add(PairTTL+time.Second)); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("put into expired slot = %v", err)
 	}
 
-	// Devices.
-	if err := s.PutDevice(ctx, "dev-1", "key-d"); err != nil {
+	// Macs.
+	m1 := Mac{ID: "mac-1", SignPub: "key-a", Admin: true, Created: now}
+	if err := s.RegisterMac(ctx, m1); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutDevice(ctx, "dev-1", "key-d"); err != nil {
+	if err := s.RegisterMac(ctx, m1); !errors.Is(err, ErrExists) {
+		t.Fatalf("same key again = %v", err)
+	}
+	if err := s.RegisterMac(ctx, Mac{ID: "mac-1", SignPub: "key-b", Created: now}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("other key = %v", err)
+	}
+	if got, _ := s.GetMac(ctx, "mac-1"); got.SignPub != "key-a" || !got.Admin {
+		t.Fatalf("mac = %+v", got)
+	}
+	if _, err := s.GetMac(ctx, "mac-9"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing mac = %v", err)
+	}
+	s.RegisterMac(ctx, Mac{ID: "mac-2", SignPub: "key-c", Created: now.Add(time.Second)})
+	if list, _ := s.ListMacs(ctx); len(list) != 2 || list[0].ID != "mac-1" || list[1].Admin {
+		t.Fatalf("list macs = %+v", list)
+	}
+
+	// Invites: single use, and they expire.
+	if err := s.CreateInvite(ctx, "h1", "mac-1", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UseInvite(ctx, "h1", now); err != nil {
+		t.Fatalf("use = %v", err)
+	}
+	if err := s.UseInvite(ctx, "h1", now); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second use = %v", err)
+	}
+	s.CreateInvite(ctx, "h2", "mac-1", now)
+	if err := s.UseInvite(ctx, "h2", now.Add(InviteTTL+time.Second)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expired invite used: %v", err)
+	}
+
+	// Devices belong to one Mac.
+	if err := s.PutDevice(ctx, "mac-1", "dev-1", "key-d"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutDevice(ctx, "mac-1", "dev-1", "key-d"); err != nil {
 		t.Fatalf("same device again = %v", err)
 	}
-	if err := s.PutDevice(ctx, "dev-1", "key-e"); !errors.Is(err, ErrConflict) {
+	if err := s.PutDevice(ctx, "mac-1", "dev-1", "key-e"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("device key swap = %v", err)
 	}
-	if k, _ := s.DeviceKey(ctx, "dev-1"); k != "key-d" {
-		t.Fatalf("device key = %q", k)
+	if err := s.PutDevice(ctx, "mac-2", "dev-1", "key-d"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("another Mac claimed the device: %v", err)
 	}
-	if err := s.RevokeDevice(ctx, "dev-1"); err != nil {
+	if d, _ := s.GetDevice(ctx, "dev-1"); d.SignPub != "key-d" || d.Owner != "mac-1" {
+		t.Fatalf("device = %+v", d)
+	}
+	if err := s.RevokeDevice(ctx, "mac-2", "dev-1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("another Mac revoked the device: %v", err)
+	}
+	if err := s.RevokeDevice(ctx, "mac-1", "dev-1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DeviceKey(ctx, "dev-1"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("revoked device key = %v", err)
+	if _, err := s.GetDevice(ctx, "dev-1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("revoked device = %v", err)
 	}
-	if err := s.PutDevice(ctx, "dev-1", "key-d"); !errors.Is(err, ErrConflict) {
+	if err := s.PutDevice(ctx, "mac-1", "dev-1", "key-d"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("re-register revoked device = %v", err)
 	}
 
-	// Mac keys: first come first served.
-	if err := s.RegisterMac(ctx, "mac-1", "key-a"); err != nil {
+	// Removing a tenant takes its devices and mail with it.
+	s.PutDevice(ctx, "mac-2", "dev-2", "key-f")
+	d2 := env("mac-2", "dev-2")
+	s.PutEnvelope(ctx, d2, now)
+	if err := s.RemoveMac(ctx, "mac-2"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RegisterMac(ctx, "mac-1", "key-a"); err != nil {
-		t.Fatalf("same key again = %v", err)
+	if _, err := s.GetMac(ctx, "mac-2"); !errors.Is(err, ErrNotFound) {
+		t.Fatal("removed mac still there")
 	}
-	if err := s.RegisterMac(ctx, "mac-1", "key-b"); !errors.Is(err, ErrConflict) {
-		t.Fatalf("other key = %v", err)
+	if _, err := s.GetDevice(ctx, "dev-2"); !errors.Is(err, ErrNotFound) {
+		t.Fatal("removed tenant's device still active")
 	}
-	if k, _ := s.MacKey(ctx, "mac-1"); k != "key-a" {
-		t.Fatalf("mac key = %q", k)
+	if recs, _ := s.ListEnvelopes(ctx, "dev-2", 10, now); len(recs) != 0 {
+		t.Fatal("removed tenant's device still has mail")
 	}
-	if _, err := s.MacKey(ctx, "mac-9"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("missing mac = %v", err)
+	if recs, _ := s.ListEnvelopes(ctx, "mac-2", 10, now); len(recs) != 0 {
+		t.Fatal("removed tenant still has mail")
+	}
+	if err := s.RemoveMac(ctx, "mac-2"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second remove = %v", err)
 	}
 
 	// Presence.
-	if at, _ := s.LastSeen(ctx, "phone"); !at.IsZero() {
+	if at, _ := s.LastSeen(ctx, "phone:mac-1"); !at.IsZero() {
 		t.Fatalf("unseen = %v", at)
 	}
-	s.Touch(ctx, "phone", now)
-	s.Touch(ctx, "phone", now.Add(time.Second))
-	if at, _ := s.LastSeen(ctx, "phone"); !at.Equal(now.Add(time.Second)) {
+	s.Touch(ctx, "phone:mac-1", now)
+	s.Touch(ctx, "phone:mac-1", now.Add(time.Second))
+	if at, _ := s.LastSeen(ctx, "phone:mac-1"); !at.Equal(now.Add(time.Second)) {
 		t.Fatalf("last seen = %v", at)
 	}
 
-	// Expiry.
+	// Expiry: b (mac-1), pair-2, and invite h2 are left to expire.
 	later := now.Add(Retention + time.Second)
 	if recs, _ := s.ListEnvelopes(ctx, "mac-1", 10, later); len(recs) != 0 {
 		t.Fatal("expired envelope listed")
 	}
 	n, err := s.DeleteExpired(ctx, later)
-	if err != nil || n != 3 { // b, other, and the expired pair-2
+	if err != nil || n != 3 {
 		t.Fatalf("delete expired = %d, %v", n, err)
 	}
 }

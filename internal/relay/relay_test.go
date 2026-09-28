@@ -60,16 +60,17 @@ func (f *fakeFlow) MarkRead(_ context.Context, id string) error {
 }
 
 type rig struct {
-	t      *testing.T
-	now    time.Time
-	srv    *httptest.Server
-	store  *mailbox.Memory
-	relay  *Relay
-	flow   *fakeFlow
-	audit  *bytes.Buffer
-	sign   *ecdsa.PrivateKey
-	box    *ecdh.PrivateKey
-	device identity.Device
+	t             *testing.T
+	now           time.Time
+	srv           *httptest.Server
+	store         *mailbox.Memory
+	relay         *Relay
+	relayKeystore keystore.Store
+	flow          *fakeFlow
+	audit         *bytes.Buffer
+	sign          *ecdsa.PrivateKey
+	box           *ecdh.PrivateKey
+	device        identity.Device
 }
 
 func newRig(t *testing.T) *rig {
@@ -81,6 +82,7 @@ func newRig(t *testing.T) *rig {
 	t.Cleanup(r.srv.Close)
 
 	ks := &keystore.Memory{}
+	r.relayKeystore = ks
 	mac, _ := identity.LoadOrCreateMac(ks)
 	devs, _ := identity.LoadDevices(ks)
 	r.sign, _ = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -91,8 +93,8 @@ func newRig(t *testing.T) *rig {
 		EnrolledAt: r.now,
 	}
 	devs.Enroll(r.device)
-	store.RegisterMac(context.Background(), mac.ID, mac.SignPub())
-	store.PutDevice(context.Background(), r.device.ID, r.device.SignPub)
+	store.RegisterMac(context.Background(), mailbox.Mac{ID: mac.ID, SignPub: mac.SignPub(), Admin: true, Created: r.now})
+	store.PutDevice(context.Background(), mac.ID, r.device.ID, r.device.SignPub)
 
 	r.flow = &fakeFlow{tasks: []flowcli.Task{
 		{Slug: "phone-dispatch", Name: "dispatcher", Live: true},
@@ -313,6 +315,31 @@ func TestSessionsOnlySentWhenChanged(t *testing.T) {
 	r.tick()
 	if n := len(byKind(r.inbox(), protocol.KindSessions)); n != 1 {
 		t.Fatalf("sync answered %d times", n)
+	}
+}
+
+// A phone paired after the relay started must be picked up without a
+// restart: pairing runs in another process and writes the Keychain.
+func TestPicksUpPhonesPairedAfterStart(t *testing.T) {
+	r := newRig(t)
+	ks := r.relayKeystore
+	// Enroll a second phone the way `flow-remote pair` would: a separate
+	// Devices loaded from the same keystore.
+	other, _ := identity.LoadDevices(ks)
+	s2, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	b2, _ := ecdh.P256().GenerateKey(rand.Reader)
+	dev2 := identity.Device{ID: "dev-latecomer00", Name: "second", SignPub: envelope.EncodeSignPub(&s2.PublicKey), BoxPub: envelope.EncodeBoxPub(b2.PublicKey()), EnrolledAt: r.now}
+	if err := other.Enroll(dev2); err != nil {
+		t.Fatal(err)
+	}
+	r.store.PutDevice(context.Background(), r.relay.Mac.ID, dev2.ID, dev2.SignPub)
+
+	pt, _ := json.Marshal(protocol.Msg{Kind: protocol.KindSend, Task: "phone-dispatch", Body: "hi from the new phone"})
+	e, _ := envelope.Seal(pt, s2, dev2.ID, r.relay.Mac.ID, r.relay.Mac.Box.PublicKey(), r.now.UnixMilli())
+	r.store.PutEnvelope(context.Background(), *e, r.now)
+	r.tick()
+	if len(r.flow.sent) != 1 {
+		t.Fatalf("the relay ignored a phone paired after it started: %q\n%s", r.flow.sent, r.audit)
 	}
 }
 

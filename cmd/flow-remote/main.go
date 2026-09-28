@@ -1,15 +1,22 @@
-// Command relay is the Mac side of flow-remote.
+// Command flow-remote is the Mac side of flow-remote: it sets up this Mac,
+// pairs phones, and runs the relay that carries messages between the
+// mailbox and flow sessions.
 //
-//	relay setup --mailbox URL --app URL   save where the mailbox and app live,
-//	                                      and register this Mac with the mailbox
-//	                                      (FLOW_REMOTE_SETUP_TOKEN, once)
-//	relay pair [--png FILE]               show a QR code (and optionally save it
+//	flow-remote setup --mailbox URL [--app URL]
+//	                                      save where the mailbox lives and
+//	                                      register this Mac: the first Mac with
+//	                                      FLOW_REMOTE_SETUP_TOKEN, others with
+//	                                      FLOW_REMOTE_INVITE from `invite`
+//	flow-remote pair [--png FILE]               show a QR code (and optionally save it
 //	                                      as an image) and enroll a phone
-//	relay run                             deliver messages in the foreground
-//	relay start | stop | status           run it as a launchd agent (at login,
+//	flow-remote run                             deliver messages in the foreground
+//	flow-remote start | stop | status           run it as a launchd agent (at login,
 //	                                      restarted on crash), stop it, check it
-//	relay devices                         list enrolled phones
-//	relay revoke <device-id>              stop trusting a phone
+//	flow-remote devices                         list enrolled phones
+//	flow-remote revoke <device-id>              stop trusting a phone
+//	flow-remote invite                          (admin) a single-use code for another Mac
+//	flow-remote tenants                         (admin) list the Macs using this mailbox
+//	flow-remote remove-tenant <mac-id>          (admin) remove a Mac, its phones and mail
 //
 // Keys and the device list live in the login Keychain under "flow-remote".
 // Everything else is in ~/.flow-remote.
@@ -45,6 +52,7 @@ import (
 type config struct {
 	Mailbox string `json:"mailbox"`
 	App     string `json:"app"`
+	Name    string `json:"name,omitempty"` // what phones call this Mac
 }
 
 func main() {
@@ -71,17 +79,30 @@ func main() {
 		err = devices()
 	case "revoke":
 		err = revoke(os.Args[2:])
+	case "invite":
+		err = invite(ctx)
+	case "tenants":
+		err = tenants(ctx)
+	case "remove-tenant":
+		err = removeTenant(ctx, os.Args[2:])
 	default:
 		usage()
 	}
 	if err != nil && !errors.Is(err, context.Canceled) {
-		fmt.Fprintln(os.Stderr, "relay:", err)
+		fmt.Fprintln(os.Stderr, "flow-remote:", err)
 		os.Exit(1)
 	}
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: relay setup --mailbox URL --app URL | pair [--png FILE] | run | start | stop | status | devices | revoke <device-id>")
+	fmt.Fprintln(os.Stderr, `usage: flow-remote <command>
+  setup --mailbox URL [--name N]    set up this Mac (FLOW_REMOTE_SETUP_TOKEN or FLOW_REMOTE_INVITE)
+  pair [--png FILE]                 show a QR code and enroll a phone
+  start | stop | status             run the relay in the background (launchd)
+  run                               run the relay in the foreground
+  devices | revoke <device-id>      list or revoke this Mac's phones
+  invite                            (admin) a single-use code for another Mac
+  tenants | remove-tenant <mac-id>  (admin) list or remove Macs`)
 	os.Exit(2)
 }
 
@@ -104,7 +125,7 @@ func loadConfig() (config, error) {
 	var c config
 	b, err := os.ReadFile(filepath.Join(home(), "config.json"))
 	if errors.Is(err, os.ErrNotExist) {
-		return c, errors.New("run `relay setup --mailbox URL --app URL` first")
+		return c, errors.New("run `flow-remote setup --mailbox URL` first")
 	}
 	if err != nil {
 		return c, err
@@ -115,12 +136,16 @@ func loadConfig() (config, error) {
 func setup(args []string) error {
 	fs := flag.NewFlagSet("setup", flag.ExitOnError)
 	mb := fs.String("mailbox", "", "mailbox base URL")
-	app := fs.String("app", "", "phone app URL")
+	app := fs.String("app", "", "phone app URL (default: the mailbox URL)")
+	name := fs.String("name", "", "what phones call this Mac (default: its hostname)")
 	fs.Parse(args)
-	if *mb == "" || *app == "" {
-		return errors.New("both --mailbox and --app are required")
+	if *mb == "" {
+		return errors.New("--mailbox is required")
 	}
-	b, _ := json.MarshalIndent(config{Mailbox: strings.TrimRight(*mb, "/"), App: strings.TrimRight(*app, "/")}, "", "  ")
+	if *app == "" {
+		*app = *mb // the mailbox serves the phone app too
+	}
+	b, _ := json.MarshalIndent(config{Mailbox: strings.TrimRight(*mb, "/"), App: strings.TrimRight(*app, "/"), Name: *name}, "", "  ")
 	if err := os.MkdirAll(home(), 0o700); err != nil {
 		return err
 	}
@@ -134,15 +159,18 @@ func setup(args []string) error {
 	fmt.Printf("saved. This Mac is %s, fingerprint %s\n", mac.ID, mac.Fingerprint())
 	// The token comes from the environment so it stays out of shell
 	// history and the process list.
-	if tok := os.Getenv("FLOW_REMOTE_SETUP_TOKEN"); tok != "" {
-		c := &client.Client{BaseURL: strings.TrimRight(*mb, "/"), Mac: mac}
-		if err := c.Register(context.Background(), tok); err != nil {
-			return fmt.Errorf("registering with the mailbox: %w", err)
+	// Secrets come from the environment so they stay out of shell history
+	// and the process list.
+	tok, inv := os.Getenv("FLOW_REMOTE_SETUP_TOKEN"), os.Getenv("FLOW_REMOTE_INVITE")
+	c := &client.Client{BaseURL: strings.TrimRight(*mb, "/"), Mac: mac}
+	if err := c.Register(context.Background(), tok, inv); err != nil {
+		if tok == "" && inv == "" {
+			fmt.Println("not registered yet. Ask an admin Mac for `flow-remote invite`, then run setup again with FLOW_REMOTE_INVITE=<code>.")
+			return nil
 		}
-		fmt.Println("registered with the mailbox.")
-	} else {
-		fmt.Println("not registered: set FLOW_REMOTE_SETUP_TOKEN and run setup again if this Mac is new to the mailbox.")
+		return fmt.Errorf("registering with the mailbox: %w", err)
 	}
+	fmt.Println("registered with the mailbox. Next: `flow-remote start`, then `flow-remote pair`.")
 	return nil
 }
 
@@ -219,14 +247,17 @@ func pair(ctx context.Context, args []string) error {
 		return err
 	}
 	if err := mb.PutDevice(ctx, dev); err != nil {
-		return fmt.Errorf("enrolled here, but registering it with the mailbox failed (relay run retries): %w", err)
+		return fmt.Errorf("enrolled here, but registering it with the mailbox failed (the relay retries on start): %w", err)
 	}
-	host, _ := os.Hostname()
+	macName := cfg.Name
+	if macName == "" {
+		macName, _ = os.Hostname()
+	}
 	r := &relay.Relay{Mac: mac, Mailbox: mb}
-	if err := r.SendTo(ctx, dev, protocol.Msg{Kind: protocol.KindPaired, MacName: host}); err != nil {
+	if err := r.SendTo(ctx, dev, protocol.Msg{Kind: protocol.KindPaired, MacName: macName}); err != nil {
 		return fmt.Errorf("enrolled, but telling the phone failed: %w", err)
 	}
-	fmt.Printf("Enrolled %s. Start the relay with `relay run` (or the launchd agent).\n", dev.ID)
+	fmt.Printf("Enrolled %s. If the relay isn't running yet: `flow-remote start`.\n", dev.ID)
 	return nil
 }
 
@@ -349,7 +380,7 @@ func devices() error {
 	}
 	list := devs.List()
 	if len(list) == 0 {
-		fmt.Println("no phones enrolled; run `relay pair`")
+		fmt.Println("no phones enrolled; run `flow-remote pair`")
 	}
 	for _, d := range list {
 		state := "active"
@@ -363,7 +394,7 @@ func devices() error {
 
 func revoke(args []string) error {
 	if len(args) != 1 {
-		return errors.New("usage: relay revoke <device-id>")
+		return errors.New("usage: flow-remote revoke <device-id>")
 	}
 	ks := store()
 	devs, err := identity.LoadDevices(ks)
@@ -384,9 +415,85 @@ func revoke(args []string) error {
 	}
 	mb := &client.Client{BaseURL: cfg.Mailbox, Mac: mac}
 	if err := mb.RevokeDevice(context.Background(), args[0]); err != nil {
-		fmt.Printf("the mailbox didn't get the revocation (%v); relay run retries it on start.\n", err)
+		fmt.Printf("the mailbox didn't get the revocation (%v); the relay retries it when it next starts.\n", err)
 		return nil
 	}
 	fmt.Println("the mailbox rejects its requests too.")
+	return nil
+}
+
+func adminClient() (*client.Client, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return nil, err
+	}
+	mac, err := identity.LoadOrCreateMac(store())
+	if err != nil {
+		return nil, err
+	}
+	return &client.Client{BaseURL: cfg.Mailbox, Mac: mac}, nil
+}
+
+func invite(ctx context.Context) error {
+	c, err := adminClient()
+	if err != nil {
+		return err
+	}
+	code, exp, err := c.Invite(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Printf(`Single-use invite, valid until %s:
+
+  %s
+
+On the other Mac, after installing flow-remote:
+
+  FLOW_REMOTE_INVITE=%s flow-remote setup --mailbox %s
+
+The invite adds that Mac as its own tenant. It can't see or reach this
+Mac's sessions or phones, and this Mac can't reach its.
+`, exp.Local().Format(time.RFC1123), code, code, c.BaseURL)
+	return nil
+}
+
+func tenants(ctx context.Context) error {
+	c, err := adminClient()
+	if err != nil {
+		return err
+	}
+	list, err := c.Tenants(ctx)
+	if err != nil {
+		return err
+	}
+	for _, t := range list {
+		role, seen := "member", "never"
+		if t.Admin {
+			role = "admin"
+		}
+		if t.LastSeen != nil {
+			seen = t.LastSeen.Local().Format(time.DateTime)
+		}
+		me := ""
+		if t.ID == c.Mac.ID {
+			me = "  (this Mac)"
+		}
+		fmt.Printf("%s  %-6s  joined %s  last seen %s%s\n", t.ID, role, t.Created.Local().Format(time.DateOnly), seen, me)
+	}
+	return nil
+}
+
+func removeTenant(ctx context.Context, args []string) error {
+	if len(args) != 1 {
+		return errors.New("usage: flow-remote remove-tenant <mac-id>")
+	}
+	c, err := adminClient()
+	if err != nil {
+		return err
+	}
+	if err := c.RemoveTenant(ctx, args[0]); err != nil {
+		return err
+	}
+	fmt.Printf("removed %s, its phones and its queued mail.\n", args[0])
 	return nil
 }

@@ -5,8 +5,8 @@
 //
 // Configuration comes from the environment:
 //
-//	MAILBOX_SETUP_TOKEN   lets a Mac register its key (`relay setup --token`).
-//	                      Empty disables registration.
+//	MAILBOX_SETUP_TOKEN   registers the first, admin Mac (`flow-remote setup`).
+//	                      Clear it afterwards; invites cover every other Mac.
 //	MAILBOX_STORE         "memory" (default) or "mongo"
 //	MAILBOX_MONGO_URI     connection string, for "mongo"
 //	MAILBOX_MONGO_DB      database name (default: the one in the URI's path;

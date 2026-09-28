@@ -97,12 +97,47 @@ func (c *Client) doWith(ctx context.Context, method, path string, body any, sign
 	return nil
 }
 
-// Register binds this Mac's id to its key at the mailbox. setupToken is
-// the mailbox's MAILBOX_SETUP_TOKEN; it's only needed once.
-func (c *Client) Register(ctx context.Context, setupToken string) error {
+// Register binds this Mac's id to its key at the mailbox, with either the
+// mailbox's setup token (the first, admin Mac) or an invite. Registering
+// again with the same key is a no-op.
+func (c *Client) Register(ctx context.Context, setupToken, invite string) error {
 	hdr := http.Header{}
-	hdr.Set("X-FR-Setup", setupToken)
+	if setupToken != "" {
+		hdr.Set("X-FR-Setup", setupToken)
+	}
+	if invite != "" {
+		hdr.Set("X-FR-Invite", invite)
+	}
 	return c.doWith(ctx, "POST", "/v1/macs", map[string]string{"mac_id": c.Mac.ID, "sign_pub": c.Mac.SignPub()}, true, hdr, nil)
+}
+
+// Invite creates a single-use invite for another Mac. Admin Macs only.
+func (c *Client) Invite(ctx context.Context) (code string, expires time.Time, err error) {
+	var out struct {
+		Code    string    `json:"code"`
+		Expires time.Time `json:"expires"`
+	}
+	err = c.do(ctx, "POST", "/v1/relay/invites", map[string]string{}, true, &out)
+	return out.Code, out.Expires, err
+}
+
+type Tenant struct {
+	ID       string     `json:"id"`
+	Admin    bool       `json:"admin"`
+	Created  time.Time  `json:"created"`
+	LastSeen *time.Time `json:"last_seen"`
+}
+
+func (c *Client) Tenants(ctx context.Context) ([]Tenant, error) {
+	var out struct {
+		Tenants []Tenant `json:"tenants"`
+	}
+	err := c.do(ctx, "GET", "/v1/relay/tenants", nil, true, &out)
+	return out.Tenants, err
+}
+
+func (c *Client) RemoveTenant(ctx context.Context, macID string) error {
+	return c.do(ctx, "POST", "/v1/relay/tenants/"+macID+"/remove", nil, true, nil)
 }
 
 // OpenPair lets the phone post one enrollment for pairID.

@@ -90,12 +90,12 @@ func (d *Deferred) Ack(ctx context.Context, to string, ids []string) error {
 	return s.Ack(ctx, to, ids)
 }
 
-func (d *Deferred) OpenPair(ctx context.Context, pairID string, now time.Time) error {
+func (d *Deferred) OpenPair(ctx context.Context, pairID, macID string, now time.Time) error {
 	s, err := d.get()
 	if err != nil {
 		return err
 	}
-	return s.OpenPair(ctx, pairID, now)
+	return s.OpenPair(ctx, pairID, macID, now)
 }
 
 func (d *Deferred) PutPair(ctx context.Context, pairID string, e envelope.Envelope, now time.Time) error {
@@ -106,52 +106,84 @@ func (d *Deferred) PutPair(ctx context.Context, pairID string, e envelope.Envelo
 	return s.PutPair(ctx, pairID, e, now)
 }
 
-func (d *Deferred) TakePair(ctx context.Context, pairID string, now time.Time) (envelope.Envelope, error) {
+func (d *Deferred) TakePair(ctx context.Context, pairID, macID string, now time.Time) (envelope.Envelope, error) {
 	s, err := d.get()
 	if err != nil {
 		return envelope.Envelope{}, err
 	}
-	return s.TakePair(ctx, pairID, now)
+	return s.TakePair(ctx, pairID, macID, now)
 }
 
-func (d *Deferred) RegisterMac(ctx context.Context, macID, signPub string) error {
+func (d *Deferred) RegisterMac(ctx context.Context, m Mac) error {
 	s, err := d.get()
 	if err != nil {
 		return err
 	}
-	return s.RegisterMac(ctx, macID, signPub)
+	return s.RegisterMac(ctx, m)
 }
 
-func (d *Deferred) MacKey(ctx context.Context, macID string) (string, error) {
+func (d *Deferred) GetMac(ctx context.Context, macID string) (Mac, error) {
 	s, err := d.get()
 	if err != nil {
-		return "", err
+		return Mac{}, err
 	}
-	return s.MacKey(ctx, macID)
+	return s.GetMac(ctx, macID)
 }
 
-func (d *Deferred) PutDevice(ctx context.Context, deviceID, signPub string) error {
+func (d *Deferred) ListMacs(ctx context.Context) ([]Mac, error) {
+	s, err := d.get()
+	if err != nil {
+		return nil, err
+	}
+	return s.ListMacs(ctx)
+}
+
+func (d *Deferred) RemoveMac(ctx context.Context, macID string) error {
 	s, err := d.get()
 	if err != nil {
 		return err
 	}
-	return s.PutDevice(ctx, deviceID, signPub)
+	return s.RemoveMac(ctx, macID)
 }
 
-func (d *Deferred) RevokeDevice(ctx context.Context, deviceID string) error {
+func (d *Deferred) CreateInvite(ctx context.Context, hash, createdBy string, now time.Time) error {
 	s, err := d.get()
 	if err != nil {
 		return err
 	}
-	return s.RevokeDevice(ctx, deviceID)
+	return s.CreateInvite(ctx, hash, createdBy, now)
 }
 
-func (d *Deferred) DeviceKey(ctx context.Context, deviceID string) (string, error) {
+func (d *Deferred) UseInvite(ctx context.Context, hash string, now time.Time) error {
 	s, err := d.get()
 	if err != nil {
-		return "", err
+		return err
 	}
-	return s.DeviceKey(ctx, deviceID)
+	return s.UseInvite(ctx, hash, now)
+}
+
+func (d *Deferred) PutDevice(ctx context.Context, owner, deviceID, signPub string) error {
+	s, err := d.get()
+	if err != nil {
+		return err
+	}
+	return s.PutDevice(ctx, owner, deviceID, signPub)
+}
+
+func (d *Deferred) RevokeDevice(ctx context.Context, owner, deviceID string) error {
+	s, err := d.get()
+	if err != nil {
+		return err
+	}
+	return s.RevokeDevice(ctx, owner, deviceID)
+}
+
+func (d *Deferred) GetDevice(ctx context.Context, deviceID string) (Device, error) {
+	s, err := d.get()
+	if err != nil {
+		return Device{}, err
+	}
+	return s.GetDevice(ctx, deviceID)
 }
 
 func (d *Deferred) Touch(ctx context.Context, who string, now time.Time) error {

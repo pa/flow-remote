@@ -54,6 +54,25 @@ type Relay struct {
 
 	sessionsHash string
 	sessionsAt   time.Time
+	devicesAt    time.Time // last registry re-read
+}
+
+const (
+	// The registry is re-read this often, and right away (at most every
+	// reloadMin) when a message comes from a device we don't know. Pairing
+	// runs in a separate process, so a running relay has to look again.
+	reloadEvery = 15 * time.Second
+	reloadMin   = 2 * time.Second
+)
+
+func (r *Relay) reloadDevices(minAge time.Duration) {
+	if r.now().Sub(r.devicesAt) < minAge {
+		return
+	}
+	r.devicesAt = r.now()
+	if err := r.Devices.Reload(); err != nil {
+		r.log("reload devices", "err", err)
+	}
 }
 
 func (r *Relay) now() time.Time {
@@ -65,6 +84,7 @@ func (r *Relay) now() time.Time {
 
 // Tick does one round and returns how long to wait before the next.
 func (r *Relay) Tick(ctx context.Context) (time.Duration, error) {
+	r.reloadDevices(reloadEvery)
 	batch, err := r.Mailbox.List(ctx)
 	if err != nil {
 		return time.Minute, err
@@ -96,6 +116,10 @@ func (r *Relay) Tick(ctx context.Context) (time.Duration, error) {
 // that fail checks are acked too, so junk doesn't come back every poll.
 func (r *Relay) handle(ctx context.Context, e envelope.Envelope, forceSessions *bool) bool {
 	dev, ok := r.Devices.Active(e.From)
+	if !ok {
+		r.reloadDevices(reloadMin)
+		dev, ok = r.Devices.Active(e.From)
+	}
 	if !ok {
 		r.audit("drop", e.From, "", "unknown or revoked device")
 		return true
