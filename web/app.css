@@ -159,3 +159,4 @@ main { will-change: auto; }
 .icon-btn:active { background: var(--off-soft); }
 .icon-btn svg { width: 22px; height: 22px; }
 .icon-btn svg path { stroke-width: 1.8; }
+.mark-wave { height: 16px; flex: none; margin-right: 2px; }

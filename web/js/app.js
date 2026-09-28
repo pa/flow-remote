@@ -252,7 +252,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v16";
+const BUILD = "v17";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -403,10 +403,16 @@ function screen() {
   return sessionsScreen(p);
 }
 
-function bar(title, { back, sub, backCount, action } = {}) {
+// flow's wave, from flow-bar, before the Mac name on the sessions screen.
+function brandMark() {
+  return h("img", { class: "mark-wave", src: "flow-wave.svg", alt: "flow" });
+}
+
+function bar(title, { back, sub, backCount, action, brand } = {}) {
   return h("header", { class: "bar" },
     back ? h("button", { class: "back", "aria-label": backCount ? `Back, ${backCount} unread` : "Back", onclick: back },
       "‹", backCount ? h("span", { class: "count" }, backCount) : null) : null,
+    brand ? brandMark() : null,
     h("div", { class: "titles" }, h("h1", {}, title), sub ?? null),
     action ?? null);
 }
@@ -840,7 +846,7 @@ function sessionsScreen(p) {
   }
 
   return h("main", {},
-    bar(macLabel(p), { sub: macLine(p), action: settingsButton(p) }),
+    bar(macLabel(p), { sub: macLine(p), action: settingsButton(p), brand: true }),
     macSwitcher(),
     h("div", { class: "searchbar" }, searchBox),
     h("div", { class: `list ${offline ? "dim" : ""}` }, body));
