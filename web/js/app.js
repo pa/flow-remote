@@ -252,7 +252,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v18";
+const BUILD = "v19";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -403,16 +403,19 @@ function screen() {
   return sessionsScreen(p);
 }
 
-// flow's wave, from flow-bar, before the title on the Settings screen.
+// flow's wave, from flow-bar, at the top of the Settings page. Built once
+// and reused: render() rebuilds the screen on every poll, and a fresh <img>
+// each time flickers while it decodes.
+let markEl = null;
 function brandMark() {
-  return h("img", { class: "mark-wave", src: "flow-wave.svg", alt: "flow" });
+  markEl ??= h("img", { class: "mark-wave", src: "flow-wave.svg", alt: "flow" });
+  return markEl;
 }
 
-function bar(title, { back, sub, backCount, action, brand } = {}) {
+function bar(title, { back, sub, backCount, action } = {}) {
   return h("header", { class: "bar" },
     back ? h("button", { class: "back", "aria-label": backCount ? `Back, ${backCount} unread` : "Back", onclick: back },
       "‹", backCount ? h("span", { class: "count" }, backCount) : null) : null,
-    brand ? brandMark() : null,
     h("div", { class: "titles" }, h("h1", {}, title), sub ?? null),
     action ?? null);
 }
@@ -951,8 +954,9 @@ function envLabel() {
 
 function settingsScreen() {
   return h("main", {},
-    bar("Settings", { back: goBack, brand: true }),
-    h("p", { class: "muted pad" }, "Running on: ", envLabel(), ` · build ${BUILD}`),
+    bar("Settings", { back: goBack }),
+    h("div", { class: "about" }, brandMark(),
+      h("p", { class: "muted" }, "Running on: ", envLabel(), ` · build ${BUILD}`)),
     h("div", { class: "pad" }, h("button", {
       class: "link",
       onclick: () => {

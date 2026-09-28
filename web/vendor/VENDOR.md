@@ -14,7 +14,7 @@ Each directory keeps its library's license text (`LICENSE`). qrcode-generator
 doesn't ship one, so its file reproduces the MIT notice from the source
 header (Copyright (c) 2009 Kazuhiko Arase).
 
-The icon's "w" wave, and `web/flow-wave.svg` in the Settings header, come
+The icon's "w" wave, and `web/flow-wave.svg` at the top of Settings, come
 from flow-bar (MIT, same author), from flow's brand assets.
 
 To update, run `npm pack <pkg>@<version>`, compare its sha512 with
