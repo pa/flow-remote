@@ -186,27 +186,75 @@ async function savePairings() {
 // screen is pinned to the *visible* area, which visualViewport reports, and
 // only the message list scrolls. Android Chrome gets the same result from
 // interactive-widget=resizes-content in the viewport meta.
+// BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
+// version a phone is running: an installed iOS app doesn't reload when a
+// new one is deployed.
+const BUILD = "v13";
+
+// The keyboard is "up" exactly while the message box has focus. On a phone
+// that's when iOS shows the keyboard. Guessing it from heights failed in
+// the installed app and left the thread unpinned while typing.
+let typing = false;
+
 function fitViewport() {
   const vv = window.visualViewport;
-  if (!vv) return;
-  const rootStyle = document.documentElement.style;
-  rootStyle.setProperty("--app-h", `${vv.height}px`);
-  rootStyle.setProperty("--app-top", `${vv.offsetTop}px`);
-  // In an installed iOS app innerHeight can shrink along with the keyboard,
-  // so compare against the screen as well.
-  const full = Math.max(window.innerHeight, document.documentElement.clientHeight, screen.height * 0.85);
-  document.documentElement.classList.toggle("kb-open", full - vv.height > 150);
+  const html = document.documentElement;
+  if (vv) {
+    html.style.setProperty("--app-h", `${vv.height}px`);
+    html.style.setProperty("--app-top", `${vv.offsetTop}px`);
+  }
+  html.classList.toggle("kb-open", typing && env.kind !== "desktop");
   const list = root.querySelector(".thread");
   if (list && state.view === "thread") list.scrollTop = list.scrollHeight;
+  if (debugOn) drawDebug();
 }
 if (window.visualViewport) {
   visualViewport.addEventListener("resize", fitViewport);
   visualViewport.addEventListener("scroll", fitViewport);
 }
-// Undo iOS scrolling the page itself when the text box gets focus.
 document.addEventListener("focusin", (e) => {
-  if (e.target.tagName === "TEXTAREA") requestAnimationFrame(() => { window.scrollTo(0, 0); fitViewport(); });
+  if (e.target.tagName !== "TEXTAREA") return;
+  typing = true;
+  // Undo iOS scrolling the page itself to reveal the box.
+  requestAnimationFrame(() => { window.scrollTo(0, 0); fitViewport(); });
+  setTimeout(fitViewport, 350); // after the keyboard animation settles
 });
+document.addEventListener("focusout", (e) => {
+  if (e.target.tagName !== "TEXTAREA") return;
+  typing = false;
+  requestAnimationFrame(() => { window.scrollTo(0, 0); fitViewport(); });
+});
+
+// ---- layout readout (Settings → Show layout numbers) ----
+
+let debugOn = (() => { try { return localStorage.getItem("frDebug") === "1"; } catch { return false; } })();
+
+function drawDebug() {
+  let el = document.getElementById("fr-debug");
+  if (!debugOn) { el?.remove(); return; }
+  if (!el) {
+    el = document.createElement("pre");
+    el.id = "fr-debug";
+    document.body.append(el);
+  }
+  const vv = window.visualViewport;
+  const tv = document.querySelector(".threadview")?.getBoundingClientRect();
+  const comp = document.querySelector(".composer")?.getBoundingClientRect();
+  const probe = document.createElement("div");
+  probe.style.cssText = "position:fixed;padding-bottom:env(safe-area-inset-bottom);padding-top:env(safe-area-inset-top);visibility:hidden";
+  document.body.append(probe);
+  const cs = getComputedStyle(probe);
+  const safe = `${cs.paddingTop} / ${cs.paddingBottom}`;
+  probe.remove();
+  el.textContent = [
+    `build ${BUILD} · ${env.kind} · ${env.os}`,
+    `inner ${innerWidth}x${innerHeight} · screen ${window.screen.width}x${window.screen.height}`,
+    `vv ${vv ? `${Math.round(vv.width)}x${Math.round(vv.height)} top ${Math.round(vv.offsetTop)}` : "n/a"} · scrollY ${Math.round(scrollY)}`,
+    `safe top/bottom ${safe} · typing ${typing} · kb-open ${document.documentElement.classList.contains("kb-open")}`,
+    tv ? `thread ${Math.round(tv.top)}..${Math.round(tv.bottom)}` : "",
+    comp ? `composer ${Math.round(comp.top)}..${Math.round(comp.bottom)}` : "",
+  ].filter(Boolean).join("\n");
+}
 
 // ---- reply indicators ----
 
@@ -804,7 +852,16 @@ function envLabel() {
 function settingsScreen() {
   return h("main", {},
     bar("Settings", { back: () => go("sessions") }),
-    h("p", { class: "muted pad" }, "Running on: ", envLabel()),
+    h("p", { class: "muted pad" }, "Running on: ", envLabel(), ` · build ${BUILD}`),
+    h("div", { class: "pad" }, h("button", {
+      class: "link",
+      onclick: () => {
+        debugOn = !debugOn;
+        try { localStorage.setItem("frDebug", debugOn ? "1" : "0"); } catch {}
+        drawDebug();
+        render();
+      },
+    }, debugOn ? "Hide layout numbers" : "Show layout numbers")),
     state.pairings.map((p) => h("section", { class: "card" },
       h("h2", {}, macLabel(p), p.mac_id === state.active ? h("span", { class: "chip live" }, "showing") : null),
       h("p", {}, "Mac id: ", h("code", {}, p.mac_id)),
@@ -1008,6 +1065,28 @@ document.addEventListener("visibilitychange", () => {
   else startPolling();
 });
 
+// ---- updates ----
+
+// An installed app keeps running the code it loaded, possibly for days, so
+// check for a new version each time it comes to the front, and reload onto
+// it as soon as it takes over. Not while typing: that would lose a draft.
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  const hadController = Boolean(navigator.serviceWorker.controller);
+  navigator.serviceWorker.register("./sw.js").then((reg) => {
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) reg.update().catch(() => {});
+    });
+  }).catch(() => {});
+  let reloading = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!hadController || reloading) return; // first install: nothing to replace
+    const reload = () => { reloading = true; location.reload(); };
+    if (typing) document.addEventListener("focusout", reload, { once: true });
+    else reload();
+  });
+}
+
 // ---- boot ----
 
 async function loadState() {
@@ -1029,7 +1108,7 @@ async function loadState() {
 }
 
 async function boot() {
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(() => {});
+  registerServiceWorker();
   const offer = (() => {
     try { return parseOffer(location.hash); } catch { return null; }
   })();
