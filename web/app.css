@@ -110,3 +110,7 @@ button.primary:active { filter: brightness(0.9); }
 .qr { border-radius: 10px; }
 .guide ol li { line-height: 1.5; }
 button.secondary { border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; }
+.searchbar { padding: 10px 12px 0; }
+.search { background: var(--field); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; }
+mark { background: none; color: var(--accent); font-weight: 600; }
+.sub.wrap { white-space: normal; overflow: visible; }

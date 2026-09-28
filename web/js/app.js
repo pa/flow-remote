@@ -12,6 +12,7 @@ import * as db from "./db.js";
 import { b64u, generateIdentity, exportPublic, fingerprint, seal, verify, open } from "./envelope.js";
 import { parseOffer, newDeviceId, enrollmentEnvelope } from "./pairing.js";
 import qrcode from "../vendor/qrcode-generator-2.0.4/qrcode.mjs";
+import { search } from "./fuzzy.js";
 
 const POLL_MS = 3000;
 const STATUS_EVERY = 5; // polls between Mac status checks
@@ -30,6 +31,7 @@ const state = {
   offer: null,
   error: "",
   replyTo: null,
+  query: "", // sessions-screen search
 };
 
 const root = document.getElementById("app");
@@ -99,11 +101,39 @@ function h(tag, attrs = {}, ...kids) {
     else if (k === "class") el.className = v;
     else el.setAttribute(k, v === true ? "" : v);
   }
-  for (const kid of kids.flat()) {
+  for (const kid of kids.flat(Infinity)) {
     if (kid == null || kid === false) continue;
     el.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
   }
   return el;
+}
+
+// hl renders text with the matched characters highlighted, as DOM nodes.
+function hl(text, positions) {
+  if (!positions?.length) return text;
+  const set = new Set(positions);
+  const out = [];
+  let run = "", inMatch = false;
+  const flush = () => {
+    if (run) out.push(inMatch ? h("mark", {}, run) : run);
+    run = "";
+  };
+  for (let i = 0; i < text.length; i++) {
+    const m = set.has(i);
+    if (m !== inMatch) { flush(); inMatch = m; }
+    run += text[i];
+  }
+  flush();
+  return out;
+}
+
+// snippet cuts a long message around its first match, keeping positions.
+function snippet(text, positions, width = 90) {
+  if (text.length <= width) return { text, positions };
+  const first = positions[0] ?? 0;
+  const start = Math.max(0, Math.min(first - 20, text.length - width));
+  const cut = text.slice(start, start + width);
+  return { text: (start > 0 ? "…" : "") + cut + "…", positions: positions.map((p) => p - start + (start > 0 ? 1 : 0)).filter((p) => p >= 0 && p < cut.length + 1) };
 }
 
 function ago(ms) {
@@ -132,10 +162,17 @@ async function savePairings() {
 // ---- screens ----
 
 function render() {
-  // Keep a half-typed message and its focus across re-renders.
+  // Keep a half-typed message, and the search box, with their focus.
   const ta = root.querySelector("textarea");
   const draft = ta ? { value: ta.value, focused: document.activeElement === ta, start: ta.selectionStart, end: ta.selectionEnd } : null;
+  const sb = root.querySelector("input.search");
+  const searchFocus = sb && document.activeElement === sb ? { start: sb.selectionStart, end: sb.selectionEnd } : null;
   root.replaceChildren(screen());
+  const nextSb = root.querySelector("input.search");
+  if (searchFocus && nextSb) {
+    nextSb.focus();
+    nextSb.setSelectionRange(searchFocus.start, searchFocus.end);
+  }
   if (state.view === "thread") {
     const list = root.querySelector(".thread");
     if (list) list.scrollTop = list.scrollHeight;
@@ -497,25 +534,65 @@ function sessionsScreen(p) {
   const liveSlugs = new Set(live.map((s) => s.slug));
   const earlier = [...tasksWithItems].filter((t) => !liveSlugs.has(t)).sort();
 
-  const row = (slug, sub, chip, chipClass) => {
+  const row = (slug, sub, chip, chipClass, marks = {}) => {
     const n = unreadCount(p.mac_id, slug);
     return h("button", { class: "row", onclick: () => openThread(slug) },
       h("div", { class: "top" },
-        h("span", { class: "slug" }, slug),
+        h("span", { class: "slug" }, hl(slug, marks.slug)),
         n ? h("span", { class: "badge" }, n) : null,
         h("span", { class: `chip ${chipClass}` }, chip)),
-      sub ? h("span", { class: "sub" }, sub) : null);
+      sub ? h("span", { class: "sub" }, hl(sub, marks.sub)) : null);
   };
+  const liveRow = (s, marks) => row(s.slug, s.waiting_on ? `waiting on ${s.waiting_on}` : s.name,
+    s.can_send ? "live" : "read only", s.can_send ? "live" : "ro", marks);
+
+  const searchBox = h("input", {
+    class: "search", type: "search", placeholder: "Search sessions and messages", value: state.query,
+    autocomplete: "off", autocapitalize: "off", spellcheck: "false", "aria-label": "Search",
+  });
+  searchBox.addEventListener("input", () => { state.query = searchBox.value; render(); });
+
+  let body;
+  const q = state.query.trim();
+  if (q) {
+    // Sessions: live ones with their details, plus threads no longer running.
+    const pool = [
+      ...live.map((s) => ({ ...s, sub: s.waiting_on ? `waiting on ${s.waiting_on}` : s.name, tagText: (s.tags || []).map((t) => "#" + t).join(" "), live: true })),
+      ...earlier.map((slug) => ({ slug, sub: "", live: false })),
+    ];
+    const hits = search(q, pool, { slug: 3, sub: 1.5, project: 1, tagText: 1 });
+    const msgHits = search(q, mine, { body: 1 }).slice(0, 20);
+    body = [
+      hits.length ? h("h2", { class: "section" }, "Sessions") : null,
+      hits.map(({ item, field, positions }) => {
+        const marks = field === "slug" ? { slug: positions } : field === "sub" ? { sub: positions } : {};
+        return item.live ? liveRow(item, marks) : row(item.slug, "", "not running", "off", marks);
+      }),
+      msgHits.length ? h("h2", { class: "section" }, "Messages") : null,
+      msgHits.map(({ item, positions }) => {
+        const sn = snippet(item.body, positions);
+        return h("button", { class: "row", onclick: () => openThread(item.task) },
+          h("div", { class: "top" },
+            h("span", { class: "slug" }, item.task),
+            h("span", { class: "chip ro" }, item.dir === "in" ? "from session" : "you")),
+          h("span", { class: "sub wrap" }, hl(sn.text, sn.positions)));
+      }),
+      hits.length || msgHits.length ? null : h("p", { class: "muted pad" }, `Nothing matches "${q}".`),
+    ];
+  } else {
+    body = [
+      live.length ? null : h("p", { class: "muted pad" }, "No live sessions reported yet."),
+      live.map((s) => liveRow(s)),
+      earlier.length ? h("h2", { class: "section" }, "Not running") : null,
+      earlier.map((slug) => row(slug, "", "not running", "off")),
+    ];
+  }
 
   return h("main", {},
     bar(macLabel(p), { sub: macLine(p) }),
     macSwitcher(),
-    h("div", { class: "list" },
-      live.length ? null : h("p", { class: "muted pad" }, "No live sessions reported yet."),
-      live.map((s) => row(s.slug, s.waiting_on ? `waiting on ${s.waiting_on}` : s.name,
-        s.can_send ? "live" : "read only", s.can_send ? "live" : "ro")),
-      earlier.length ? h("h2", { class: "section" }, "Not running") : null,
-      earlier.map((slug) => row(slug, "", "not running", "off"))),
+    h("div", { class: "searchbar" }, searchBox),
+    h("div", { class: "list" }, body),
     h("footer", { class: "foot" },
       h("button", { class: "link", onclick: () => { sendSync(p); go("settings"); } }, "Settings")));
 }

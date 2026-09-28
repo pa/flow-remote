@@ -76,7 +76,7 @@ func main() {
 	case "status":
 		err = agentStatus()
 	case "devices":
-		err = devices()
+		err = devices(os.Args[2:])
 	case "revoke":
 		err = revoke(os.Args[2:])
 	case "invite":
@@ -100,7 +100,7 @@ func usage() {
   pair [--png FILE]                 show a QR code and enroll a phone
   start | stop | status             run the relay in the background (launchd)
   run                               run the relay in the foreground
-  devices | revoke <device-id>      list or revoke this Mac's phones
+  devices [--all] | revoke <id>     list this Mac's phones (--all: with revoked), or revoke one
   invite                            (admin) a single-use code for another Mac
   tenants | remove-tenant <mac-id>  (admin) list or remove Macs`)
 	os.Exit(2)
@@ -373,21 +373,32 @@ func syncDevices(ctx context.Context, mb *client.Client, devs *identity.Devices,
 	}
 }
 
-func devices() error {
+// devices lists this Mac's active phones. Revoked ones stay on record, so
+// their ids can never be enrolled again with a new key, and --all shows them.
+func devices(args []string) error {
+	all := len(args) > 0 && (args[0] == "--all" || args[0] == "-a")
 	devs, err := identity.LoadDevices(store())
 	if err != nil {
 		return err
 	}
-	list := devs.List()
-	if len(list) == 0 {
-		fmt.Println("no phones enrolled; run `flow-remote pair`")
-	}
-	for _, d := range list {
+	shown, hidden := 0, 0
+	for _, d := range devs.List() {
+		if d.Revoked() && !all {
+			hidden++
+			continue
+		}
 		state := "active"
 		if d.Revoked() {
 			state = "revoked " + d.RevokedAt.Format(time.DateOnly)
 		}
 		fmt.Printf("%s  %-24q  %s  enrolled %s  %s\n", d.ID, d.Name, d.Fingerprint(), d.EnrolledAt.Format(time.DateOnly), state)
+		shown++
+	}
+	if shown == 0 {
+		fmt.Println("no phones enrolled; run `flow-remote pair`")
+	}
+	if hidden > 0 {
+		fmt.Printf("(%d revoked, not shown: `flow-remote devices --all`)\n", hidden)
 	}
 	return nil
 }

@@ -122,7 +122,7 @@ Invites cover everything after that.
 | `start` / `stop` / `status` | run the relay as a launchd agent, stop it, check it |
 | `run` | run the relay in the foreground |
 | `pair [--png FILE]` | show a QR code and enroll a phone |
-| `devices` / `revoke <device-id>` | list this Mac's phones, or cut one off |
+| `devices [--all]` / `revoke <device-id>` | list this Mac's active phones (`--all` adds revoked ones), or cut one off |
 | `invite` | (admin) a single-use code for another Mac |
 | `tenants` / `remove-tenant <mac-id>` | (admin) list or remove Macs |
 
@@ -144,6 +144,7 @@ and the error otherwise.
 
 ```bash
 go test ./...                       # includes WebCrypto interop tests under Node
+node --test web/js                  # the phone app's own tests (fuzzy search)
 FLOW_REMOTE_MONGO_URI=mongodb://127.0.0.1:27017 go test ./internal/mailbox/   # the Mongo store
 
 # A local mailbox with the app, in memory:
