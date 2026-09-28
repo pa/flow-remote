@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      # A real MongoDB, so the Mongo store and its migration are tested too.
+      mongo:
+        image: mongo:8
+        ports: ["27017:27017"]
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1}).ok'"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # Node runs web/js under test: the WebCrypto interop tests in Go, and
+      # the app's own tests.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test -race ./...
+        env:
+          FLOW_REMOTE_MONGO_URI: mongodb://localhost:27017
+      - run: node --test web/js
+
+  macos:
+    # flow-remote uses the Keychain and launchd, so build and test it on macOS.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build -o flow-remote ./cmd/flow-remote && ./flow-remote version
+      - run: go test ./internal/keystore ./internal/identity ./internal/relay
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t flow-remote-mailbox:ci .

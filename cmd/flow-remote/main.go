@@ -49,6 +49,9 @@ import (
 	"github.com/pa/flow-remote/internal/relay"
 )
 
+// version is set at release build time (-ldflags "-X main.version=v1.2.3").
+var version = "dev"
+
 type config struct {
 	Mailbox string `json:"mailbox"`
 	App     string `json:"app"`
@@ -63,6 +66,9 @@ func main() {
 	defer stop()
 	var err error
 	switch os.Args[1] {
+	case "version", "--version", "-v":
+		fmt.Println("flow-remote", version)
+		return
 	case "setup":
 		err = setup(os.Args[2:])
 	case "pair":
@@ -102,7 +108,8 @@ func usage() {
   run                               run the relay in the foreground
   devices [--all] | revoke <id>     list this Mac's phones (--all: with revoked), or revoke one
   invite                            (admin) a single-use code for another Mac
-  tenants | remove-tenant <mac-id>  (admin) list or remove Macs`)
+  tenants | remove-tenant <mac-id>  (admin) list or remove Macs
+  version                           print the version`)
 	os.Exit(2)
 }
 

@@ -36,6 +36,9 @@ import (
 	"github.com/pa/flow-remote/internal/mailbox"
 )
 
+// version is set at release build time (-ldflags "-X main.version=v1.2.3").
+var version = "dev"
+
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	if err := run(log); err != nil {
@@ -107,7 +110,7 @@ func run(log *slog.Logger) error {
 		defer cancel()
 		srv.Shutdown(sctx)
 	}()
-	log.Info("listening", "port", port)
+	log.Info("listening", "port", port, "version", version)
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

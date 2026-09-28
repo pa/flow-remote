@@ -49,13 +49,40 @@ Keep the `MAILBOX_SETUP_TOKEN` you set. Your first Mac needs it.
 
 ## 2. Set up your Mac
 
-Needs Go and [flow](https://github.com/Facets-cloud/flow).
+You need [flow](https://github.com/Facets-cloud/flow) on the Mac. Install
+`flow-remote` from a release, or build it.
+
+**From a release** (Apple Silicon shown; use `darwin_amd64` on an Intel Mac):
+
+```bash
+V=v0.1.0   # the release you want: https://github.com/pa/flow-remote/releases
+# While the repo is private, download with gh (signed in with access):
+gh release download "$V" -R pa/flow-remote -p "flow-remote_${V}_darwin_arm64.tar.gz" -p checksums.txt
+# Once it's public, curl works too:
+# curl -fLO "https://github.com/pa/flow-remote/releases/download/$V/flow-remote_${V}_darwin_arm64.tar.gz"
+
+shasum -a 256 -c checksums.txt --ignore-missing   # check the download
+tar -xzf "flow-remote_${V}_darwin_arm64.tar.gz"
+install -m 755 "flow-remote_${V}_darwin_arm64/flow-remote" ~/.local/bin/   # any directory on your PATH
+flow-remote version
+```
+
+The binary isn't notarized. If you downloaded it with a browser and macOS
+blocks it, clear the quarantine flag:
+`xattr -d com.apple.quarantine ~/.local/bin/flow-remote`. Downloads made
+with `gh` or `curl` aren't quarantined.
+
+**From source** (needs Go 1.26):
 
 ```bash
 git clone https://github.com/pa/flow-remote && cd flow-remote
-go install ./cmd/flow-remote                 # installs to $(go env GOPATH)/bin
+go install ./cmd/flow-remote        # installs to $(go env GOPATH)/bin
+```
 
-# Your first Mac on this mailbox: the setup token makes it the admin.
+Then set up the Mac. The first Mac on a mailbox uses its setup token and
+becomes the admin:
+
+```bash
 FLOW_REMOTE_SETUP_TOKEN=<token> flow-remote setup --mailbox https://flow.example.com --name "Work Mac"
 ```
 
@@ -149,6 +176,7 @@ again**, which gives it a new key.
 | `devices [--all]` / `revoke <device-id>` | list this Mac's active phones with when each last checked in (`--all` adds revoked ones), or cut one off |
 | `invite` | (admin) a single-use code for another Mac |
 | `tenants` / `remove-tenant <mac-id>` | (admin) list or remove Macs |
+| `version` | print the version |
 
 ## Mailbox configuration
 
@@ -164,6 +192,20 @@ again**, which gives it a new key.
 
 Health check: `GET /v1/health` returns `ok` once the store is connected,
 and the error otherwise.
+
+## Releases
+
+CI (`.github/workflows/ci.yml`) runs the tests on every push, against a
+real MongoDB, and builds `flow-remote` on macOS and the mailbox's Docker
+image. To publish binaries, push a version tag:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+`.github/workflows/release.yml` then builds `flow-remote` for macOS
+(arm64, amd64) and the mailbox for Linux (amd64, arm64), stamps the
+version, and attaches them with `checksums.txt` to a GitHub release.
 
 ## Development
 

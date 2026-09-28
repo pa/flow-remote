@@ -1,0 +1,52 @@
+name: Release
+
+# Push a tag like v0.1.0 to publish binaries:
+#   git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: go test ./...
+      - name: Build
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          build() { # name goos goarch pkg
+            local dir="$1_${VERSION}_$2_$3"
+            mkdir -p "dist/$dir"
+            CGO_ENABLED=0 GOOS=$2 GOARCH=$3 go build -trimpath \
+              -ldflags "-s -w -X main.version=${VERSION}" \
+              -o "dist/$dir/$1" "./cmd/$1"
+            cp LICENSE README.md "dist/$dir/"
+            tar -C dist -czf "dist/$dir.tar.gz" "$dir"
+            rm -rf "dist/$dir"
+          }
+          # flow-remote runs on the Mac (Keychain, launchd).
+          build flow-remote darwin arm64
+          build flow-remote darwin amd64
+          # The mailbox is a Linux container; the Dockerfile is the usual
+          # way to run it, but the binary is here for other hosts.
+          build mailbox linux amd64
+          build mailbox linux arm64
+          (cd dist && sha256sum *.tar.gz > checksums.txt)
+          ls -la dist
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" dist/*.tar.gz dist/checksums.txt --generate-notes --title "${{ github.ref_name }}"
