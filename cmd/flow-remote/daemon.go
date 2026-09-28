@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"text/template"
+	"time"
 )
 
 const agentLabel = "com.github.pa.flow-remote.relay"
@@ -71,12 +72,24 @@ func agentStart() error {
 	if err := os.MkdirAll(filepath.Dir(agentPath()), 0o755); err != nil {
 		return err
 	}
-	// Replace a loaded agent so a new binary or PATH takes effect.
+	// Replace a loaded agent so a new binary or PATH takes effect. bootout
+	// returns before the old one has finished unloading, and bootstrapping
+	// over it fails with "Input/output error", so wait for it to go.
 	exec.Command("launchctl", "bootout", domain()+"/"+agentLabel).Run()
+	for i := 0; i < 50 && exec.Command("launchctl", "print", domain()+"/"+agentLabel).Run() == nil; i++ {
+		time.Sleep(100 * time.Millisecond)
+	}
 	if err := os.WriteFile(agentPath(), buf.Bytes(), 0o644); err != nil {
 		return err
 	}
-	if out, err := exec.Command("launchctl", "bootstrap", domain(), agentPath()).CombinedOutput(); err != nil {
+	var out []byte
+	for attempt := 0; attempt < 3; attempt++ {
+		if out, err = exec.Command("launchctl", "bootstrap", domain(), agentPath()).CombinedOutput(); err == nil {
+			break
+		}
+		time.Sleep(time.Second)
+	}
+	if err != nil {
 		return fmt.Errorf("launchctl bootstrap: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	fmt.Printf("relay started. It runs at login and restarts if it crashes.\n  agent: %s\n  log:   %s\n", agentPath(), filepath.Join(home(), "relay.log"))
