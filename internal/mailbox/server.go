@@ -207,7 +207,7 @@ func (s *Server) postPair(w http.ResponseWriter, r *http.Request) {
 			s.fail(w, http.StatusNotFound, "no open pairing with that code; run `relay pair` again")
 			return
 		}
-		s.storeErr(w, err)
+		s.storeErrPublic(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
@@ -429,6 +429,22 @@ func (s *Server) storeErr(w http.ResponseWriter, err error) {
 		s.fail(w, http.StatusNotFound, "not found")
 	case errors.Is(err, ErrUnavailable):
 		s.fail(w, http.StatusServiceUnavailable, "the mailbox is starting; try again shortly")
+	default:
+		if s.Log != nil {
+			s.Log.Error("store", "err", err)
+		}
+		// Callers that reach here have proved who they are (setup token,
+		// Mac key or device key), and without the detail a store failure
+		// on Cloud Run is undiagnosable from outside.
+		s.fail(w, http.StatusInternalServerError, "store error: "+err.Error())
+	}
+}
+
+// storeErrPublic is storeErr for the one unauthenticated call.
+func (s *Server) storeErrPublic(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrExists), errors.Is(err, ErrConflict), errors.Is(err, ErrNotFound), errors.Is(err, ErrUnavailable):
+		s.storeErr(w, err)
 	default:
 		if s.Log != nil {
 			s.Log.Error("store", "err", err)

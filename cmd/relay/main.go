@@ -3,7 +3,8 @@
 //	relay setup --mailbox URL --app URL   save where the mailbox and app live,
 //	                                      and register this Mac with the mailbox
 //	                                      (FLOW_REMOTE_SETUP_TOKEN, once)
-//	relay pair                            show a QR code and enroll a phone
+//	relay pair [--png FILE]               show a QR code (and optionally save it
+//	                                      as an image) and enroll a phone
 //	relay run                             deliver messages (launchd runs this)
 //	relay devices                         list enrolled phones
 //	relay revoke <device-id>              stop trusting a phone
@@ -55,7 +56,7 @@ func main() {
 	case "setup":
 		err = setup(os.Args[2:])
 	case "pair":
-		err = pair(ctx)
+		err = pair(ctx, os.Args[2:])
 	case "run":
 		err = run(ctx)
 	case "devices":
@@ -137,7 +138,10 @@ func setup(args []string) error {
 	return nil
 }
 
-func pair(ctx context.Context) error {
+func pair(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("pair", flag.ExitOnError)
+	png := fs.String("png", "", "also write the QR code to this PNG file")
+	fs.Parse(args)
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
@@ -163,6 +167,13 @@ func pair(ctx context.Context) error {
 		return err
 	}
 	printQR(code)
+	if *png != "" {
+		code.Scale = 12
+		if err := os.WriteFile(*png, code.PNG(), 0o600); err != nil {
+			return err
+		}
+		fmt.Printf("QR code saved to %s\n", *png)
+	}
 	fmt.Printf("\nScan with your phone's camera, or open:\n%s\n\n", link)
 	fmt.Printf("This Mac's fingerprint: %s\n", mac.Fingerprint())
 	fmt.Printf("The code expires in %s. Waiting for the phone...\n", pairing.TTL)
