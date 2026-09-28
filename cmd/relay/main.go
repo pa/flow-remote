@@ -5,7 +5,9 @@
 //	                                      (FLOW_REMOTE_SETUP_TOKEN, once)
 //	relay pair [--png FILE]               show a QR code (and optionally save it
 //	                                      as an image) and enroll a phone
-//	relay run                             deliver messages (launchd runs this)
+//	relay run                             deliver messages in the foreground
+//	relay start | stop | status           run it as a launchd agent (at login,
+//	                                      restarted on crash), stop it, check it
 //	relay devices                         list enrolled phones
 //	relay revoke <device-id>              stop trusting a phone
 //
@@ -59,6 +61,12 @@ func main() {
 		err = pair(ctx, os.Args[2:])
 	case "run":
 		err = run(ctx)
+	case "start":
+		err = agentStart()
+	case "stop":
+		err = agentStop()
+	case "status":
+		err = agentStatus()
 	case "devices":
 		err = devices()
 	case "revoke":
@@ -73,7 +81,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: relay setup --mailbox URL --app URL | pair | run | devices | revoke <device-id>")
+	fmt.Fprintln(os.Stderr, "usage: relay setup --mailbox URL --app URL | pair [--png FILE] | run | start | stop | status | devices | revoke <device-id>")
 	os.Exit(2)
 }
 
@@ -258,6 +266,11 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	unlock, err := lockRun()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	ks := store()
 	mac, err := identity.LoadOrCreateMac(ks)
