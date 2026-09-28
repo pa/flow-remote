@@ -72,7 +72,17 @@ label { display: flex; flex-direction: column; gap: 6px; text-align: left; font-
 .scan video { width: 100%; height: 100%; object-fit: cover; }
 main > .muted { padding: 0 16px; text-align: center; }
 
-.threadview { height: 100dvh; }
+/* The thread screen is pinned to the visible viewport (see fitViewport):
+   header on top, composer on the keyboard, only the list scrolls. */
+html.in-thread, html.in-thread body { overflow: hidden; height: 100%; overscroll-behavior: none; }
+.threadview {
+  position: fixed; left: 0; right: 0; margin: 0 auto;
+  top: var(--app-top, 0px); height: var(--app-h, 100dvh);
+  padding-bottom: 0;
+}
+.threadview .bar { position: static; }
+.thread { overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+html.kb-open .composer { padding-bottom: 8px; }
 .thread { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; padding: 12px; }
 .msg { display: flex; flex-direction: column; gap: 2px; margin-bottom: 6px; }
 .msg.out { align-items: flex-end; }
@@ -114,3 +124,5 @@ button.secondary { border: 1px solid var(--line); border-radius: 12px; padding: 
 .search { background: var(--field); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; }
 mark { background: none; color: var(--accent); font-weight: 600; }
 .sub.wrap { white-space: normal; overflow: visible; }
+button.inline { color: var(--accent); text-decoration: underline; padding: 0; font: inherit; }
+.stack { display: flex; flex-direction: column; gap: 10px; }

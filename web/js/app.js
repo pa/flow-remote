@@ -161,6 +161,32 @@ async function savePairings() {
 
 // ---- screens ----
 
+// ---- keyboard ----
+
+// iOS doesn't shrink the page when the keyboard opens. It scrolls the whole
+// page up to reveal the text box, taking the header with it. So the thread
+// screen is pinned to the *visible* area, which visualViewport reports, and
+// only the message list scrolls. Android Chrome gets the same result from
+// interactive-widget=resizes-content in the viewport meta.
+function fitViewport() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const rootStyle = document.documentElement.style;
+  rootStyle.setProperty("--app-h", `${vv.height}px`);
+  rootStyle.setProperty("--app-top", `${vv.offsetTop}px`);
+  document.documentElement.classList.toggle("kb-open", window.innerHeight - vv.height > 120);
+  const list = root.querySelector(".thread");
+  if (list && state.view === "thread") list.scrollTop = list.scrollHeight;
+}
+if (window.visualViewport) {
+  visualViewport.addEventListener("resize", fitViewport);
+  visualViewport.addEventListener("scroll", fitViewport);
+}
+// Undo iOS scrolling the page itself when the text box gets focus.
+document.addEventListener("focusin", (e) => {
+  if (e.target.tagName === "TEXTAREA") requestAnimationFrame(() => { window.scrollTo(0, 0); fitViewport(); });
+});
+
 function render() {
   // Keep a half-typed message, and the search box, with their focus.
   const ta = root.querySelector("textarea");
@@ -168,6 +194,8 @@ function render() {
   const sb = root.querySelector("input.search");
   const searchFocus = sb && document.activeElement === sb ? { start: sb.selectionStart, end: sb.selectionEnd } : null;
   root.replaceChildren(screen());
+  document.documentElement.classList.toggle("in-thread", state.view === "thread");
+  fitViewport();
   const nextSb = root.querySelector("input.search");
   if (searchFocus && nextSb) {
     nextSb.focus();
@@ -321,7 +349,8 @@ function takeOffer(link) {
   try {
     const offer = parseOffer(new URL(link).hash);
     if (!offer) throw new Error("That isn't a pairing link.");
-    if (state.pairings.some((p) => p.mac_id === offer.mac_id)) {
+    const existing = state.pairings.find((p) => p.mac_id === offer.mac_id);
+    if (existing && !existing.rejected) {
       throw new Error("This phone is already paired with that Mac. Unpair it in Settings first to pair again.");
     }
     go(state.view === "scan" ? "welcome" : state.view, { offer });
@@ -475,6 +504,9 @@ async function pair(offer, name) {
   const env = await enrollmentEnvelope(offer, keys, deviceId, name);
   await api.postPair(offer.pair_id, env);
   const pub = await exportPublic(keys);
+  // Pairing again after a revocation replaces the dead pairing. Threads are
+  // stored by Mac, so the history comes back with the new key.
+  state.pairings = state.pairings.filter((x) => x.mac_id !== offer.mac_id);
   state.pairings.push({
     mac_id: offer.mac_id, mac_sign_pub: offer.mac_sign_pub, mac_box_pub: offer.mac_box_pub,
     device_id: deviceId, device_fp: await fingerprint(pub.sign_pub, pub.box_pub),
@@ -496,7 +528,11 @@ function waitingScreen(p) {
 }
 
 function macLine(p) {
-  if (p.rejected) return h("span", { class: "status warn" }, "The mailbox no longer accepts this phone for this Mac. Unpair it in Settings and pair again.");
+  if (p.rejected) {
+    return h("span", { class: "status warn" }, "This Mac revoked this phone. ",
+      h("button", { class: "inline", onclick: () => go("welcome") }, "Pair again"),
+      " to reconnect with a new key; your messages stay.");
+  }
   const s = state.macSeen[p.mac_id];
   if (s === undefined) return h("span", { class: "status" }, "Checking the Mac…");
   if (s === null) return h("span", { class: "status warn" }, "The Mac hasn't checked in yet. Is `flow-remote start` running?");
@@ -676,25 +712,36 @@ function settingsScreen() {
       h("p", {}, "This phone, for this Mac: ", h("code", {}, p.device_id)),
       h("p", {}, "Fingerprint: ", h("code", { class: "fp" }, p.device_fp)),
       h("button", { class: "danger", onclick: () => unpair(p) }, "Unpair from this Mac"),
-      h("p", { class: "muted" }, "Unpairing deletes this phone's key for that Mac. Also run ",
+      h("p", { class: "muted" }, "Unpairing deletes this phone's key for that Mac and keeps its messages. Also run ",
         h("code", {}, `flow-remote revoke ${p.device_id}`), " on it."))),
-    h("div", { class: "pad" }, h("button", { class: "primary", onclick: () => go("welcome") }, "Pair another Mac")));
+    h("div", { class: "pad stack" },
+      h("button", { class: "primary", onclick: () => go("welcome") }, "Pair another Mac"),
+      h("button", { class: "link", onclick: forgetEverything }, "Delete everything on this phone")));
 }
 
+// unpair forgets this phone's key for a Mac but keeps its threads, so
+// pairing with that Mac again brings the history back.
 async function unpair(p) {
   state.pairings = state.pairings.filter((x) => x !== p);
   delete state.sessions[p.mac_id];
+  if (state.active === p.mac_id) state.active = state.pairings[0]?.mac_id || null;
+  await savePairings();
   if (state.pairings.length === 0) {
     stopPolling();
-    await db.forget();
-    Object.assign(state, { active: null, sessions: {}, macSeen: {} });
-    itemsCache = [];
     go("welcome");
     return;
   }
-  if (state.active === p.mac_id) state.active = state.pairings[0].mac_id;
-  await savePairings();
   go("sessions");
+}
+
+// forgetEverything wipes all keys and history from this phone.
+async function forgetEverything() {
+  if (!confirm("Delete every pairing and all message history from this phone?")) return;
+  stopPolling();
+  await db.forget();
+  Object.assign(state, { pairings: [], active: null, sessions: {}, macSeen: {} });
+  itemsCache = [];
+  go("welcome");
 }
 
 // ---- messaging ----
@@ -847,7 +894,7 @@ window.addEventListener("hashchange", () => {
   try { offer = parseOffer(location.hash); } catch {}
   if (location.hash) history.replaceState(null, "", location.pathname);
   if (!offer) return;
-  if (state.pairings.some((p) => p.mac_id === offer.mac_id)) {
+  if (state.pairings.some((p) => p.mac_id === offer.mac_id && !p.rejected)) {
     go(state.view, { error: "This phone is already paired with that Mac." });
     return;
   }
@@ -888,7 +935,7 @@ async function boot() {
   if (location.hash) history.replaceState(null, "", location.pathname);
 
   await loadState();
-  if (offer && !state.pairings.some((p) => p.mac_id === offer.mac_id)) state.offer = offer;
+  if (offer && !state.pairings.some((p) => p.mac_id === offer.mac_id && !p.rejected)) state.offer = offer;
   if (!current()) state.view = "welcome";
   db.pruneSeen(Date.now() - SEEN_TTL).catch(() => {});
   render();
