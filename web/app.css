@@ -106,3 +106,7 @@ main > .muted { padding: 0 16px; text-align: center; }
 .them { background: rgba(255, 255, 255, 0.07); border-color: transparent; }
 button.primary:active { filter: brightness(0.9); }
 .center-text { text-align: center; display: flex; flex-direction: column; gap: 6px; }
+.qrwrap { display: flex; justify-content: center; }
+.qr { border-radius: 10px; }
+.guide ol li { line-height: 1.5; }
+button.secondary { border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; }

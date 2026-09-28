@@ -11,6 +11,7 @@ import * as api from "./api.js";
 import * as db from "./db.js";
 import { b64u, generateIdentity, exportPublic, fingerprint, seal, verify, open } from "./envelope.js";
 import { parseOffer, newDeviceId, enrollmentEnvelope } from "./pairing.js";
+import qrcode from "../vendor/qrcode-generator-2.0.4/qrcode.mjs";
 
 const POLL_MS = 3000;
 const STATUS_EVERY = 5; // polls between Mac status checks
@@ -34,6 +35,59 @@ const state = {
 const root = document.getElementById("app");
 const current = () => state.pairings.find((p) => p.mac_id === state.active) || state.pairings[0] || null;
 const macLabel = (p) => p.mac_name || p.mac_id;
+
+// ---- where are we running? ----
+
+// detectEnv decides which getting-started path to show. On iOS an app added
+// to the home screen keeps its own storage, apart from Safari, so a phone
+// should install before pairing or its keys end up in the wrong place.
+function detectEnv() {
+  const ua = navigator.userAgent;
+  const ios = /iPhone|iPod/.test(ua) || (/iPad|Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  const android = /Android/.test(ua);
+  const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  const phone = ios || android;
+  return {
+    os: ios ? "ios" : android ? "android" : "desktop",
+    kind: !phone ? "desktop" : standalone ? "phone-app" : "phone-browser",
+    camera: Boolean(navigator.mediaDevices?.getUserMedia),
+  };
+}
+
+const env = detectEnv();
+let installPrompt = null; // Android Chrome's deferred install prompt
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  installPrompt = e;
+  if (state.view === "welcome") render();
+});
+let continueInBrowser = false;
+
+// qrSvg draws text as a QR code with DOM calls, not markup strings.
+function qrSvg(text, size = 200) {
+  const q = qrcode(0, "M");
+  q.addData(text);
+  q.make();
+  const n = q.getModuleCount(), quiet = 4, total = n + quiet * 2;
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", `0 0 ${total} ${total}`);
+  svg.setAttribute("width", size);
+  svg.setAttribute("height", size);
+  svg.setAttribute("class", "qr");
+  const bg = document.createElementNS(NS, "rect");
+  bg.setAttribute("width", total);
+  bg.setAttribute("height", total);
+  bg.setAttribute("fill", "#fff");
+  svg.append(bg);
+  let d = "";
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (q.isDark(y, x)) d += `M${x + quiet} ${y + quiet}h1v1h-1z`;
+  const path = document.createElementNS(NS, "path");
+  path.setAttribute("d", d);
+  path.setAttribute("fill", "#000");
+  svg.append(path);
+  return svg;
+}
 
 // ---- tiny DOM helper ----
 
@@ -138,15 +192,55 @@ function cmd(text) {
 
 // The getting-started guide: what to do on the Mac, then the ways to scan.
 function welcomeScreen() {
-  const origin = location.origin;
   const adding = state.pairings.length > 0;
+  if (!adding && env.kind === "phone-browser" && !continueInBrowser) return installScreen();
+  return guideScreen(adding);
+}
+
+// installScreen is for a phone in a browser tab: install first.
+function installScreen() {
+  const steps = env.os === "ios"
+    ? [
+      h("li", {}, "Tap the ", h("b", {}, "Share"), " button in Safari's toolbar."),
+      h("li", {}, "Choose ", h("b", {}, "Add to Home Screen"), ", then ", h("b", {}, "Add"), "."),
+      h("li", {}, "Open ", h("b", {}, "flow-remote"), " from your home screen, and pair from there."),
+    ]
+    : [
+      installPrompt
+        ? h("li", {}, h("button", { class: "primary", onclick: async () => { installPrompt.prompt(); await installPrompt.userChoice; installPrompt = null; render(); } }, "Install flow-remote"))
+        : h("li", {}, "Open Chrome's menu and choose ", h("b", {}, "Install app"), " (or ", h("b", {}, "Add to Home screen"), ")."),
+      h("li", {}, "Open ", h("b", {}, "flow-remote"), " from your home screen, and pair from there."),
+    ];
+  return h("main", {},
+    bar("Install first"),
+    h("div", { class: "pad center-text" },
+      h("img", { class: "logo", src: "icon.svg", alt: "" }),
+      h("h1", { class: "brand" }, "flow-remote")),
+    h("section", { class: "card guide" },
+      h("h2", {}, env.os === "ios" ? "You're in Safari on an iPhone" : "You're in a browser on an Android phone"),
+      h("p", { class: "muted" }, env.os === "ios"
+        ? "An app on your home screen keeps its own storage, separate from Safari. Pair from the installed app, or its keys would stay behind in Safari."
+        : "Installed, it opens full screen and keeps checking for replies while it's open."),
+      h("ol", {}, steps)),
+    h("div", { class: "pad" },
+      h("button", { class: "link", onclick: () => { continueInBrowser = true; render(); } }, "Continue in the browser anyway")));
+}
+
+function guideScreen(adding) {
+  const origin = location.origin;
   const note = h("p", { class: "muted" });
+  const desktop = env.kind === "desktop";
   return h("main", {},
     bar(adding ? "Pair another Mac" : "Get started", adding ? { back: () => go("settings") } : {}),
     adding ? null : h("div", { class: "pad center-text" },
       h("img", { class: "logo", src: "icon.svg", alt: "" }),
       h("h1", { class: "brand" }, "flow-remote"),
-      h("p", { class: "muted" }, "Message your flow sessions from this phone.")),
+      h("p", { class: "muted" }, desktop ? "Message your flow sessions from your phone." : "Message your flow sessions from this phone.")),
+    desktop ? h("section", { class: "card guide" },
+      h("h2", {}, "Open it on your phone"),
+      h("p", { class: "muted" }, "Point your phone's camera at this code to open flow-remote there, then install it and pair from the phone."),
+      h("div", { class: "qrwrap" }, qrSvg(origin)),
+      h("p", { class: "muted center-text" }, origin)) : null,
     h("section", { class: "card guide" },
       h("h2", {}, "On your Mac"),
       h("ol", {},
@@ -164,8 +258,11 @@ function welcomeScreen() {
         h("li", {}, h("p", {}, "Show a pairing QR code. It's valid for 2 minutes:"),
           cmd("flow-remote pair")))),
     h("section", { class: "card guide" },
-      h("h2", {}, "On this phone"),
-      h("button", { class: "primary", onclick: () => go("scan") }, "Scan the QR code"),
+      h("h2", {}, desktop ? "Or pair this browser" : "On this phone"),
+      desktop
+        ? h("p", { class: "muted" }, "To use flow-remote at a desk, paste the link that ", h("code", {}, "flow-remote pair"), " prints.")
+        : null,
+      !desktop || env.camera ? h("button", { class: desktop ? "secondary" : "primary", onclick: () => go("scan") }, desktop ? "Scan with this computer's camera" : "Scan the QR code") : null,
       note,
       pasteBox(),
       h("p", { class: "muted" }, "Then compare the fingerprints on both screens, and type ", h("code", {}, "y"), " on the Mac."),
@@ -486,9 +583,16 @@ function threadScreen(p) {
     composer);
 }
 
+function envLabel() {
+  const where = { ios: "iPhone or iPad", android: "Android", desktop: "computer" }[env.os];
+  const how = { "phone-app": "installed app", "phone-browser": "browser tab", desktop: "browser" }[env.kind];
+  return `${where}, ${how}`;
+}
+
 function settingsScreen() {
   return h("main", {},
     bar("Settings", { back: () => go("sessions") }),
+    h("p", { class: "muted pad" }, "Running on: ", envLabel()),
     state.pairings.map((p) => h("section", { class: "card" },
       h("h2", {}, macLabel(p), p.mac_id === state.active ? h("span", { class: "chip live" }, "showing") : null),
       h("p", {}, "Mac id: ", h("code", {}, p.mac_id)),

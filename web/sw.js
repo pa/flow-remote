@@ -1,10 +1,10 @@
 // Caches the app shell so it opens offline. API calls always go to the
 // network: they're authenticated and must never be served from a cache.
-const CACHE = "flow-remote-v7";
+const CACHE = "flow-remote-v8";
 const SHELL = [
   "./", "./index.html", "./app.css", "./manifest.webmanifest", "./icon.svg", "./icon-192.png",
   "./js/app.js", "./js/api.js", "./js/db.js", "./js/envelope.js", "./js/pairing.js",
-  "./vendor/jsqr-1.4.0/jsQR.js",
+  "./vendor/jsqr-1.4.0/jsQR.js", "./vendor/qrcode-generator-2.0.4/qrcode.mjs",
 ];
 
 self.addEventListener("install", (e) => {
