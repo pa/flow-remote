@@ -252,7 +252,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v15";
+const BUILD = "v16";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -403,11 +403,20 @@ function screen() {
   return sessionsScreen(p);
 }
 
-function bar(title, { back, sub, backCount } = {}) {
+function bar(title, { back, sub, backCount, action } = {}) {
   return h("header", { class: "bar" },
     back ? h("button", { class: "back", "aria-label": backCount ? `Back, ${backCount} unread` : "Back", onclick: back },
       "‹", backCount ? h("span", { class: "count" }, backCount) : null) : null,
-    h("div", { class: "titles" }, h("h1", {}, title), sub ?? null));
+    h("div", { class: "titles" }, h("h1", {}, title), sub ?? null),
+    action ?? null);
+}
+
+// The gear in the top-right corner, so Settings is never below a long list.
+function settingsButton(p) {
+  return h("button", {
+    class: "icon-btn", "aria-label": "Settings",
+    onclick: () => { sendSync(p); go("settings"); },
+  }, svgIcon("M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"));
 }
 
 // cmd is a copyable command block.
@@ -831,12 +840,10 @@ function sessionsScreen(p) {
   }
 
   return h("main", {},
-    bar(macLabel(p), { sub: macLine(p) }),
+    bar(macLabel(p), { sub: macLine(p), action: settingsButton(p) }),
     macSwitcher(),
     h("div", { class: "searchbar" }, searchBox),
-    h("div", { class: `list ${offline ? "dim" : ""}` }, body),
-    h("footer", { class: "foot" },
-      h("button", { class: "link", onclick: () => { sendSync(p); go("settings"); } }, "Settings")));
+    h("div", { class: `list ${offline ? "dim" : ""}` }, body));
 }
 
 async function openThread(task) {

@@ -154,3 +154,8 @@ button.inline { color: var(--accent); text-decoration: underline; padding: 0; fo
 .msg.out .inline { font-size: 13px; }
 main { will-change: auto; }
 .list.dim .row { opacity: 0.55; }
+.bar .titles { flex: 1; }
+.icon-btn { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 50%; color: var(--muted); flex: none; }
+.icon-btn:active { background: var(--off-soft); }
+.icon-btn svg { width: 22px; height: 22px; }
+.icon-btn svg path { stroke-width: 1.8; }
