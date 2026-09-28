@@ -128,6 +128,12 @@ func (m *Mongo) migrate(ctx context.Context) error {
 			return err
 		}
 	}
+	// Pre-tenancy records have no creation time.
+	if _, err := retry(func() (*mongo.UpdateResult, error) {
+		return m.macs.UpdateMany(ctx, bson.M{"created": bson.M{"$exists": false}}, bson.M{"$set": bson.M{"created": time.Now()}})
+	}); err != nil {
+		return err
+	}
 	if len(macs) == 1 {
 		ownerless := bson.M{"$or": bson.A{bson.M{"owner": bson.M{"$exists": false}}, bson.M{"owner": ""}}}
 		if _, err := retry(func() (*mongo.UpdateResult, error) {

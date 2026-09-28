@@ -162,7 +162,7 @@ function welcomeScreen() {
     h("section", { class: "card guide" },
       h("h2", {}, "On this phone"),
       h("button", { class: "primary", onclick: () => go("scan") }, "Scan the QR code"),
-      photoButton(note), note,
+      note,
       pasteBox(),
       h("p", { class: "muted" }, "Then compare the fingerprints on both screens, and type ", h("code", {}, "y"), " on the Mac."),
       state.error ? h("p", { class: "error" }, state.error) : null));
@@ -197,11 +197,13 @@ let stopScan = null;
 function scanScreen() {
   const video = h("video", { playsinline: true, muted: true });
   const note = h("p", { class: "muted" }, "Point the camera at the QR code from ", h("code", {}, "flow-remote pair"), ".");
+  // The photo fallback appears only if the live camera fails or finds
+  // nothing for a while; most of the time scanning just works.
+  const fallback = h("div", { class: "pad", hidden: true }, photoButton(note));
   const view = h("main", {},
     bar("Scan", { back: () => { stopScan?.(); go("welcome"); } }),
-    h("div", { class: "scan" }, video), note,
-    h("div", { class: "pad" }, photoButton(note)));
-  startScan(video, note);
+    h("div", { class: "scan" }, video), note, fallback);
+  startScan(video, note, () => { fallback.hidden = false; });
   return view;
 }
 
@@ -242,7 +244,7 @@ async function decodeQRFromFile(file) {
   return code?.data;
 }
 
-async function startScan(video, note) {
+async function startScan(video, note, showFallback) {
   stopScan?.();
   let stream;
   try {
@@ -252,11 +254,14 @@ async function startScan(video, note) {
     note.textContent = e.name === "NotAllowedError"
       ? "Camera access is blocked. Allow it in Settings, or take a photo instead."
       : `The live camera didn't start (${e.name}: ${e.message}). Take a photo instead.`;
+    showFallback();
     return;
   }
+  const slow = setTimeout(showFallback, 10_000);
   let running = true;
   stopScan = () => {
     running = false;
+    clearTimeout(slow);
     stream.getTracks().forEach((t) => t.stop());
     stopScan = null;
   };
@@ -270,6 +275,7 @@ async function startScan(video, note) {
     await video.play();
   } catch (e) {
     note.textContent = `The camera wouldn't start (${e.name}). Take a photo instead.`;
+    showFallback();
   }
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
