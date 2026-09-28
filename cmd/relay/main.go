@@ -1,6 +1,8 @@
 // Command relay is the Mac side of flow-remote.
 //
-//	relay setup --mailbox URL --app URL   save where the mailbox and app live
+//	relay setup --mailbox URL --app URL   save where the mailbox and app live,
+//	                                      and register this Mac with the mailbox
+//	                                      (FLOW_REMOTE_SETUP_TOKEN, once)
 //	relay pair                            show a QR code and enroll a phone
 //	relay run                             deliver messages (launchd runs this)
 //	relay devices                         list enrolled phones
@@ -121,6 +123,17 @@ func setup(args []string) error {
 		return err
 	}
 	fmt.Printf("saved. This Mac is %s, fingerprint %s\n", mac.ID, mac.Fingerprint())
+	// The token comes from the environment so it stays out of shell
+	// history and the process list.
+	if tok := os.Getenv("FLOW_REMOTE_SETUP_TOKEN"); tok != "" {
+		c := &client.Client{BaseURL: strings.TrimRight(*mb, "/"), Mac: mac}
+		if err := c.Register(context.Background(), tok); err != nil {
+			return fmt.Errorf("registering with the mailbox: %w", err)
+		}
+		fmt.Println("registered with the mailbox.")
+	} else {
+		fmt.Println("not registered: set FLOW_REMOTE_SETUP_TOKEN and run setup again if this Mac is new to the mailbox.")
+	}
 	return nil
 }
 
@@ -141,6 +154,9 @@ func pair(ctx context.Context) error {
 	mb := &client.Client{BaseURL: cfg.Mailbox, Mac: mac}
 
 	offer := pairing.NewOffer(mac, "", time.Now()) // the phone uses its own origin
+	if err := mb.OpenPair(ctx, offer.PairID); err != nil {
+		return fmt.Errorf("opening the pairing at the mailbox: %w", err)
+	}
 	link := offer.Link(cfg.App)
 	code, err := qr.Encode(link, qr.L)
 	if err != nil {
@@ -182,6 +198,9 @@ func pair(ctx context.Context) error {
 	}
 	if err := devs.Enroll(dev); err != nil {
 		return err
+	}
+	if err := mb.PutDevice(ctx, dev); err != nil {
+		return fmt.Errorf("enrolled here, but registering it with the mailbox failed (relay run retries): %w", err)
 	}
 	host, _ := os.Hostname()
 	r := &relay.Relay{Mac: mac, Mailbox: mb}
@@ -261,6 +280,7 @@ func run(ctx context.Context) error {
 		Mailbox: &client.Client{BaseURL: cfg.Mailbox, Mac: mac},
 		Flow:    flowcli.CLI{},
 	}
+	syncDevices(ctx, r.Mailbox.(*client.Client), devs, log)
 	log.Info("relay running", "mac", mac.ID, "devices", len(devs.List()), "mailbox", cfg.Mailbox)
 	backoff := time.Second
 	for {
@@ -278,6 +298,22 @@ func run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(wait):
+		}
+	}
+}
+
+// syncDevices makes the mailbox's device list match the Keychain's, in
+// case a registration or revocation failed earlier.
+func syncDevices(ctx context.Context, mb *client.Client, devs *identity.Devices, log *slog.Logger) {
+	for _, d := range devs.List() {
+		var err error
+		if d.Revoked() {
+			err = mb.RevokeDevice(ctx, d.ID)
+		} else {
+			err = mb.PutDevice(ctx, d)
+		}
+		if err != nil {
+			log.Warn("device sync", "device", d.ID, "err", err)
 		}
 	}
 }
@@ -305,7 +341,8 @@ func revoke(args []string) error {
 	if len(args) != 1 {
 		return errors.New("usage: relay revoke <device-id>")
 	}
-	devs, err := identity.LoadDevices(store())
+	ks := store()
+	devs, err := identity.LoadDevices(ks)
 	if err != nil {
 		return err
 	}
@@ -313,5 +350,19 @@ func revoke(args []string) error {
 		return err
 	}
 	fmt.Printf("revoked %s. The relay rejects everything it signs from now on.\n", args[0])
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	mac, err := identity.LoadOrCreateMac(ks)
+	if err != nil {
+		return err
+	}
+	mb := &client.Client{BaseURL: cfg.Mailbox, Mac: mac}
+	if err := mb.RevokeDevice(context.Background(), args[0]); err != nil {
+		fmt.Printf("the mailbox didn't get the revocation (%v); relay run retries it on start.\n", err)
+		return nil
+	}
+	fmt.Println("the mailbox rejects its requests too.")
 	return nil
 }

@@ -5,23 +5,18 @@
 //
 // Configuration comes from the environment:
 //
-//	MAILBOX_OWNER         the one Google account allowed in (required)
-//	FIREBASE_PROJECT_ID   project whose ID tokens are accepted
-//	FIREBASE_TENANT_ID    Identity Platform tenant, if the app has one
+//	MAILBOX_SETUP_TOKEN   lets a Mac register its key (`relay setup --token`).
+//	                      Empty disables registration.
 //	MAILBOX_STORE         "memory" (default) or "mongo"
 //	MAILBOX_MONGO_URI     connection string, for "mongo"
 //	MAILBOX_MONGO_DB      database name (default "flow-remote")
-//	MAILBOX_DEV_AUTH=1    accept "Bearer dev:<email>" (local only)
 //	MAILBOX_WEB_DIR       also serve the phone app from this directory.
 //	                      Firebase Hosting only forwards to Cloud Run, so
 //	                      on GCP the image bakes the app in at /web.
-//	FIREBASE_API_KEY, FIREBASE_AUTH_DOMAIN, FIREBASE_APP_ID
-//	                      the web app's sign-in settings, served as /config.js
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -56,22 +51,9 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
-	s := &mailbox.Server{Store: store, Owner: os.Getenv("MAILBOX_OWNER"), Log: log}
-	if s.Owner == "" {
-		return errors.New("MAILBOX_OWNER is required")
-	}
-	if os.Getenv("MAILBOX_DEV_AUTH") == "1" {
-		// K_SERVICE is set on every Cloud Run service.
-		if os.Getenv("K_SERVICE") != "" {
-			return errors.New("MAILBOX_DEV_AUTH must never be set on Cloud Run")
-		}
-		s.DevAuth = true
-		log.Warn("dev auth on: any 'Bearer dev:<email>' is trusted")
-	}
-	if p := os.Getenv("FIREBASE_PROJECT_ID"); p != "" {
-		s.Tokens = &mailbox.FirebaseVerifier{ProjectID: p, TenantID: os.Getenv("FIREBASE_TENANT_ID")}
-	} else if !s.DevAuth {
-		return errors.New("FIREBASE_PROJECT_ID is required unless MAILBOX_DEV_AUTH=1")
+	s := &mailbox.Server{Store: store, SetupToken: os.Getenv("MAILBOX_SETUP_TOKEN"), Log: log}
+	if s.SetupToken != "" && len(s.SetupToken) < 24 {
+		return errors.New("MAILBOX_SETUP_TOKEN must be at least 24 characters")
 	}
 
 	port := os.Getenv("PORT")
@@ -80,7 +62,7 @@ func run(log *slog.Logger) error {
 	}
 	handler := s.Handler()
 	if dir := os.Getenv("MAILBOX_WEB_DIR"); dir != "" {
-		handler = withApp(handler, dir, s.DevAuth, s.Owner)
+		handler = withApp(handler, dir)
 	}
 	srv := &http.Server{Addr: "0.0.0.0:" + port, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
@@ -96,33 +78,12 @@ func run(log *slog.Logger) error {
 	return nil
 }
 
-// withApp serves the phone app next to the API. /config.js is generated
-// from the environment, so one image works for every deployment.
-func withApp(api http.Handler, dir string, devAuth bool, owner string) http.Handler {
-	cfg := map[string]any{
-		"firebase": map[string]string{
-			"apiKey":     os.Getenv("FIREBASE_API_KEY"),
-			"authDomain": os.Getenv("FIREBASE_AUTH_DOMAIN"),
-			"projectId":  os.Getenv("FIREBASE_PROJECT_ID"),
-			"appId":      os.Getenv("FIREBASE_APP_ID"),
-		},
-		"tenantId": os.Getenv("FIREBASE_TENANT_ID"),
-		"devEmail": "",
-	}
-	if devAuth {
-		cfg["devEmail"] = owner
-	}
-	cfgJS, _ := json.Marshal(cfg)
+// withApp serves the phone app next to the API.
+func withApp(api http.Handler, dir string) http.Handler {
 	files := http.FileServer(http.Dir(dir))
-
 	mux := http.NewServeMux()
 	mux.Handle("/v1/", api)
 	mux.Handle("/healthz", api)
-	mux.HandleFunc("GET /config.js", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-store")
-		fmt.Fprintf(w, "export default %s;\n", cfgJS)
-	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Revalidate on every load, so the CDN and the service worker
 		// pick up a deploy right away.
@@ -130,9 +91,6 @@ func withApp(api http.Handler, dir string, devAuth bool, owner string) http.Hand
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Frame-Options", "DENY")
-		if r.URL.Path == "/sw.js" {
-			w.Header().Set("Service-Worker-Allowed", "/")
-		}
 		files.ServeHTTP(w, r)
 	})
 	return mux

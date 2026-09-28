@@ -21,7 +21,7 @@ const touchEvery = 20 * time.Second
 // Mongo is the Store on Firestore with MongoDB compatibility. It works on
 // plain MongoDB too, which is what the tests use.
 type Mongo struct {
-	envs, pairs, macs, presence *mongo.Collection
+	envs, pairs, macs, devices, presence *mongo.Collection
 
 	mu      sync.Mutex
 	touched map[string]time.Time // last presence write per key
@@ -39,9 +39,16 @@ type envDoc struct {
 }
 
 type pairDoc struct {
-	ID        string            `bson:"_id"`
-	ExpiresAt time.Time         `bson:"expires_at"`
-	Env       envelope.Envelope `bson:"env"`
+	ID        string             `bson:"_id"`
+	ExpiresAt time.Time          `bson:"expires_at"`
+	Filled    bool               `bson:"filled"`
+	Env       *envelope.Envelope `bson:"env,omitempty"`
+}
+
+type deviceDoc struct {
+	ID      string `bson:"_id"`
+	SignPub string `bson:"sign_pub"`
+	Revoked bool   `bson:"revoked"`
 }
 
 type macDoc struct {
@@ -66,7 +73,7 @@ func OpenMongo(ctx context.Context, uri, dbName string) (*Mongo, error) {
 	db := cl.Database(dbName)
 	m := &Mongo{
 		envs: db.Collection("envelopes"), pairs: db.Collection("pairs"),
-		macs: db.Collection("macs"), presence: db.Collection("presence"),
+		macs: db.Collection("macs"), devices: db.Collection("devices"), presence: db.Collection("presence"),
 		touched: map[string]time.Time{}, seen: map[string]time.Time{},
 	}
 	_, err = m.envs.Indexes().CreateMany(ctx, []mongo.IndexModel{
@@ -128,21 +135,46 @@ func (m *Mongo) Ack(ctx context.Context, to string, ids []string) error {
 	return err
 }
 
-func (m *Mongo) PutPair(ctx context.Context, pairID string, e envelope.Envelope, now time.Time) error {
-	_, err := m.pairs.InsertOne(ctx, pairDoc{ID: pairID, ExpiresAt: now.Add(PairTTL), Env: e})
+func (m *Mongo) OpenPair(ctx context.Context, pairID string, now time.Time) error {
+	_, err := m.pairs.InsertOne(ctx, pairDoc{ID: pairID, ExpiresAt: now.Add(PairTTL)})
 	if mongo.IsDuplicateKeyError(err) {
 		return ErrExists
 	}
 	return err
 }
 
+// PutPair fills the slot in one conditional update, so two posts racing
+// for the same slot can't both win.
+func (m *Mongo) PutPair(ctx context.Context, pairID string, e envelope.Envelope, now time.Time) error {
+	res, err := m.pairs.UpdateOne(ctx,
+		bson.M{"_id": pairID, "filled": false, "expires_at": bson.M{"$gt": now}},
+		bson.M{"$set": bson.M{"filled": true, "env": e}})
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 1 {
+		return nil
+	}
+	n, err := m.pairs.CountDocuments(ctx, bson.M{"_id": pairID, "filled": true, "expires_at": bson.M{"$gt": now}})
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return ErrExists
+	}
+	return ErrNotFound
+}
+
 func (m *Mongo) TakePair(ctx context.Context, pairID string, now time.Time) (envelope.Envelope, error) {
 	var d pairDoc
-	err := m.pairs.FindOneAndDelete(ctx, bson.M{"_id": pairID, "expires_at": bson.M{"$gt": now}}).Decode(&d)
-	if errors.Is(err, mongo.ErrNoDocuments) {
+	err := m.pairs.FindOneAndDelete(ctx, bson.M{"_id": pairID, "filled": true, "expires_at": bson.M{"$gt": now}}).Decode(&d)
+	if errors.Is(err, mongo.ErrNoDocuments) || (err == nil && d.Env == nil) {
 		return envelope.Envelope{}, ErrNotFound
 	}
-	return d.Env, err
+	if err != nil {
+		return envelope.Envelope{}, err
+	}
+	return *d.Env, nil
 }
 
 func (m *Mongo) RegisterMac(ctx context.Context, macID, signPub string) error {
@@ -163,6 +195,35 @@ func (m *Mongo) RegisterMac(ctx context.Context, macID, signPub string) error {
 func (m *Mongo) MacKey(ctx context.Context, macID string) (string, error) {
 	var d macDoc
 	err := m.macs.FindOne(ctx, bson.M{"_id": macID}).Decode(&d)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return "", ErrNotFound
+	}
+	return d.SignPub, err
+}
+
+func (m *Mongo) PutDevice(ctx context.Context, deviceID, signPub string) error {
+	_, err := m.devices.InsertOne(ctx, deviceDoc{ID: deviceID, SignPub: signPub})
+	if !mongo.IsDuplicateKeyError(err) {
+		return err
+	}
+	var d deviceDoc
+	if err := m.devices.FindOne(ctx, bson.M{"_id": deviceID}).Decode(&d); err != nil {
+		return err
+	}
+	if d.Revoked || d.SignPub != signPub {
+		return ErrConflict
+	}
+	return nil
+}
+
+func (m *Mongo) RevokeDevice(ctx context.Context, deviceID string) error {
+	_, err := m.devices.UpdateOne(ctx, bson.M{"_id": deviceID}, bson.M{"$set": bson.M{"revoked": true}}, options.UpdateOne().SetUpsert(true))
+	return err
+}
+
+func (m *Mongo) DeviceKey(ctx context.Context, deviceID string) (string, error) {
+	var d deviceDoc
+	err := m.devices.FindOne(ctx, bson.M{"_id": deviceID, "revoked": false}).Decode(&d)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return "", ErrNotFound
 	}

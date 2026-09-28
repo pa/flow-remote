@@ -3,6 +3,7 @@
 // the process boundary.
 import * as env from "../../web/js/envelope.js";
 import * as pairing from "../../web/js/pairing.js";
+import { signHeaders } from "../../web/js/api.js";
 
 const subtle = globalThis.crypto.subtle;
 const ECDH = { name: "ECDH", namedCurve: "P-256" };
@@ -50,6 +51,14 @@ switch (req.mode) {
       fingerprint: await env.fingerprint(pub.sign_pub, pub.box_pub),
       mac_fingerprint: await env.fingerprint(offer.mac_sign_pub, offer.mac_box_pub),
     };
+    break;
+  }
+  case "signreq": {
+    // Sign a request the way the phone does; Go verifies the headers.
+    const id = await env.generateIdentity(true);
+    const pub = await env.exportPublic(id);
+    const body = new TextEncoder().encode(req.body);
+    out = { sign_pub: pub.sign_pub, headers: await signHeaders(req.method, req.path, body, req.id, id.sign.privateKey, req.ts) };
     break;
   }
   default:

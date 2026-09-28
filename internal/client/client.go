@@ -1,5 +1,5 @@
-// Package client is the relay's side of the mailbox API. Every call except
-// TakePair is signed with the Mac's sign key.
+// Package client is the relay's side of the mailbox API. Every call is
+// signed with the Mac's sign key.
 package client
 
 import (
@@ -47,6 +47,10 @@ func (c *Client) now() time.Time {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body any, signed bool, out any) error {
+	return c.doWith(ctx, method, path, body, signed, nil, out)
+}
+
+func (c *Client) doWith(ctx context.Context, method, path string, body any, signed bool, hdr http.Header, out any) error {
 	var raw []byte
 	if body != nil {
 		var err error
@@ -60,6 +64,9 @@ func (c *Client) do(ctx context.Context, method, path string, body any, signed b
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for k, v := range hdr {
+		req.Header[k] = v
 	}
 	if signed {
 		if err := reqsig.Sign(req, c.Mac.ID, c.Mac.Sign, raw, c.now()); err != nil {
@@ -90,14 +97,36 @@ func (c *Client) do(ctx context.Context, method, path string, body any, signed b
 	return nil
 }
 
+// Register binds this Mac's id to its key at the mailbox. setupToken is
+// the mailbox's MAILBOX_SETUP_TOKEN; it's only needed once.
+func (c *Client) Register(ctx context.Context, setupToken string) error {
+	hdr := http.Header{}
+	hdr.Set("X-FR-Setup", setupToken)
+	return c.doWith(ctx, "POST", "/v1/macs", map[string]string{"mac_id": c.Mac.ID, "sign_pub": c.Mac.SignPub()}, true, hdr, nil)
+}
+
+// OpenPair lets the phone post one enrollment for pairID.
+func (c *Client) OpenPair(ctx context.Context, pairID string) error {
+	return c.do(ctx, "POST", "/v1/relay/pairs", map[string]string{"pair_id": pairID}, true, nil)
+}
+
 // TakePair fetches the phone's enrollment for pairID, or ErrNotFound if it
 // hasn't arrived yet.
 func (c *Client) TakePair(ctx context.Context, pairID string) (*envelope.Envelope, error) {
 	var e envelope.Envelope
-	if err := c.do(ctx, "GET", "/v1/pair/"+pairID, nil, false, &e); err != nil {
+	if err := c.do(ctx, "GET", "/v1/relay/pairs/"+pairID, nil, true, &e); err != nil {
 		return nil, err
 	}
 	return &e, nil
+}
+
+// PutDevice lets the mailbox accept requests signed by this device.
+func (c *Client) PutDevice(ctx context.Context, dev identity.Device) error {
+	return c.do(ctx, "POST", "/v1/relay/devices", map[string]string{"device_id": dev.ID, "sign_pub": dev.SignPub}, true, nil)
+}
+
+func (c *Client) RevokeDevice(ctx context.Context, deviceID string) error {
+	return c.do(ctx, "POST", "/v1/relay/devices/"+deviceID+"/revoke", nil, true, nil)
 }
 
 func (c *Client) List(ctx context.Context) (Batch, error) {

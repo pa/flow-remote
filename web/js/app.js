@@ -1,7 +1,7 @@
-// flow-remote phone app. Screens: sign in, pair, sessions, thread.
+// flow-remote phone app. Screens: pair, sessions, thread, settings.
+// There's no sign-in: the device key authenticates every request.
 // Every message body comes from a flow session or from the user, so the
 // UI is built with DOM nodes and textContent, never innerHTML.
-import * as auth from "./auth.js";
 import * as api from "./api.js";
 import * as db from "./db.js";
 import { b64u, generateIdentity, exportPublic, fingerprint, seal, verify, open } from "./envelope.js";
@@ -13,7 +13,7 @@ const ONLINE_MS = 90_000; // the relay checks in at least once a minute
 const SEEN_TTL = 8 * 24 * 3600_000;
 
 const state = {
-  user: null,
+  rejected: false, // the mailbox no longer accepts this device
   pairing: null, // {mac_id, mac_sign_pub, mac_box_pub, device_id, confirmed, mac_name}
   keys: null, // {sign, box} CryptoKeyPairs, non-extractable
   sessions: [],
@@ -90,7 +90,6 @@ function backgroundRender() {
 }
 
 function screen() {
-  if (!state.user) return signInScreen();
   if (state.offer) return pairScreen();
   if (!state.pairing) return welcomeScreen();
   if (!state.pairing.confirmed) return waitingScreen();
@@ -104,14 +103,6 @@ function bar(title, { back, sub } = {}) {
   return h("header", { class: "bar" },
     back ? h("button", { class: "back", "aria-label": "Back", onclick: back }, "‹") : null,
     h("div", { class: "titles" }, h("h1", {}, title), sub ?? null));
-}
-
-function signInScreen() {
-  return h("main", { class: "center" },
-    h("h1", { class: "brand" }, "flow-remote"),
-    h("p", { class: "muted" }, "Send work to your flow sessions from this phone."),
-    h("button", { class: "primary", onclick: () => auth.signIn().catch((e) => go(state.view, { error: e.message })) }, "Sign in with Google"),
-    state.error ? h("p", { class: "error" }, state.error) : null);
 }
 
 function welcomeScreen() {
@@ -230,7 +221,7 @@ async function pair(offer, name) {
   const keys = await generateIdentity(false);
   const deviceId = newDeviceId();
   const env = await enrollmentEnvelope(offer, keys, deviceId, name);
-  await api.postPair(offer.pair_id, offer.mac_id, offer.mac_sign_pub, env);
+  await api.postPair(offer.pair_id, env);
   const pub = await exportPublic(keys);
   const pairing = {
     mac_id: offer.mac_id, mac_sign_pub: offer.mac_sign_pub, mac_box_pub: offer.mac_box_pub,
@@ -238,6 +229,7 @@ async function pair(offer, name) {
   };
   await db.set("keys", keys);
   await db.set("pairing", pairing);
+  api.setSigner(deviceId, keys.sign.privateKey);
   Object.assign(state, { keys, pairing, offer: null });
   render();
   startPolling();
@@ -253,6 +245,7 @@ function waitingScreen() {
 }
 
 function macLine() {
+  if (state.rejected) return h("span", { class: "status warn" }, "The mailbox no longer accepts this phone. Unpair it in Settings and pair again.");
   const s = state.macSeen;
   if (s === undefined) return h("span", { class: "status" }, "Checking the Mac…");
   if (s === null) return h("span", { class: "status warn" }, "The Mac hasn't checked in yet. Is the relay running?");
@@ -361,7 +354,6 @@ function settingsScreen() {
   return h("main", {},
     bar("Settings", { back: () => go("sessions") }),
     h("section", { class: "card" },
-      h("p", {}, "Signed in as ", h("b", {}, state.user.email)),
       h("p", {}, "Paired with ", h("b", {}, p.mac_name || p.mac_id)),
       h("p", {}, "This phone: ", h("code", {}, p.device_id)),
       h("p", {}, "Fingerprint: ", h("code", { class: "fp" }, p.device_fp)),
@@ -372,7 +364,8 @@ function settingsScreen() {
 async function unpair() {
   stopPolling();
   await db.forget();
-  Object.assign(state, { pairing: null, keys: null, sessions: [], offer: null });
+  api.setSigner(null, null);
+  Object.assign(state, { pairing: null, keys: null, sessions: [], offer: null, rejected: false });
   itemsCache = [];
   go("sessions");
 }
@@ -474,14 +467,14 @@ let pollTimer = null;
 
 async function pollOnce(n) {
   const p = state.pairing;
-  const res = await api.listEnvelopes(p.device_id);
+  const res = await api.listEnvelopes();
   const ids = [];
   for (const rec of res.envelopes || []) {
     await handle(rec.env);
     ids.push(rec.env.id);
   }
   if (ids.length) {
-    await api.ack(p.device_id, ids);
+    await api.ack(ids);
     itemsCache = await db.allItems();
   }
   if (n % STATUS_EVERY === 0) {
@@ -500,12 +493,13 @@ function startPolling() {
     if (!polling) return;
     try {
       await pollOnce(n++);
+      state.rejected = false;
     } catch (e) {
-      if (e.status === 401) {
-        stopPolling();
-        state.user = null;
-        render();
-        return;
+      // Before the Mac confirms pairing, the mailbox doesn't know this
+      // device yet, so 401 is expected. After that it means revoked.
+      if (e.status === 401 && state.pairing?.confirmed && !state.rejected) {
+        state.rejected = true;
+        backgroundRender();
       }
     }
     pollTimer = setTimeout(loop, POLL_MS);
@@ -518,9 +512,23 @@ function stopPolling() {
   clearTimeout(pollTimer);
 }
 
+// A pairing link opened while the app is already running only changes the
+// fragment, so the page doesn't reload. Pick it up here.
+window.addEventListener("hashchange", () => {
+  let offer = null;
+  try { offer = parseOffer(location.hash); } catch {}
+  if (location.hash) history.replaceState(null, "", location.pathname);
+  if (!offer) return;
+  if (state.pairing) {
+    go(state.view, { error: "This phone is already paired. Unpair it in Settings first." });
+    return;
+  }
+  go("sessions", { offer });
+});
+
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) stopPolling();
-  else if (state.user) startPolling();
+  else startPolling();
 });
 
 // ---- boot ----
@@ -533,19 +541,15 @@ async function boot() {
   // The fragment holds the one-time secret; don't leave it in history.
   if (location.hash) history.replaceState(null, "", location.pathname);
 
-  try {
-    state.user = await auth.user();
-  } catch (e) {
-    state.error = e.message;
-  }
   state.pairing = (await db.get("pairing")) || null;
   state.keys = (await db.get("keys")) || null;
+  if (state.pairing && state.keys) api.setSigner(state.pairing.device_id, state.keys.sign.privateKey);
   state.sessions = (await db.get("sessions")) || [];
   if (offer && !state.pairing) state.offer = offer;
   itemsCache = await db.allItems();
   db.pruneSeen(Date.now() - SEEN_TTL).catch(() => {});
   render();
-  if (state.user && state.pairing) {
+  if (state.pairing) {
     startPolling();
     sendSync();
   }

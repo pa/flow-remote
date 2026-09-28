@@ -50,13 +50,25 @@ func contract(t *testing.T, s Store) {
 		t.Fatal("ack deleted another recipient's envelope")
 	}
 
-	// Pairing slots are single-use and expire.
+	// Pairing slots: opened by the Mac, filled once by the phone, taken once.
 	p := env("mac-1")
+	if err := s.PutPair(ctx, "pair-1", p, now); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("put into unopened slot = %v", err)
+	}
+	if err := s.OpenPair(ctx, "pair-1", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.OpenPair(ctx, "pair-1", now); !errors.Is(err, ErrExists) {
+		t.Fatalf("second open = %v", err)
+	}
+	if _, err := s.TakePair(ctx, "pair-1", now); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("take from empty slot = %v", err)
+	}
 	if err := s.PutPair(ctx, "pair-1", p, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutPair(ctx, "pair-1", p, now); !errors.Is(err, ErrExists) {
-		t.Fatalf("second pair put = %v", err)
+	if err := s.PutPair(ctx, "pair-1", env("mac-1"), now); !errors.Is(err, ErrExists) {
+		t.Fatalf("second put = %v", err)
 	}
 	got, err := s.TakePair(ctx, "pair-1", now)
 	if err != nil || got.ID != p.ID {
@@ -65,9 +77,32 @@ func contract(t *testing.T, s Store) {
 	if _, err := s.TakePair(ctx, "pair-1", now); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("second take = %v", err)
 	}
-	s.PutPair(ctx, "pair-2", p, now)
-	if _, err := s.TakePair(ctx, "pair-2", now.Add(PairTTL+time.Second)); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("expired take = %v", err)
+	s.OpenPair(ctx, "pair-2", now)
+	if err := s.PutPair(ctx, "pair-2", p, now.Add(PairTTL+time.Second)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("put into expired slot = %v", err)
+	}
+
+	// Devices.
+	if err := s.PutDevice(ctx, "dev-1", "key-d"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutDevice(ctx, "dev-1", "key-d"); err != nil {
+		t.Fatalf("same device again = %v", err)
+	}
+	if err := s.PutDevice(ctx, "dev-1", "key-e"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("device key swap = %v", err)
+	}
+	if k, _ := s.DeviceKey(ctx, "dev-1"); k != "key-d" {
+		t.Fatalf("device key = %q", k)
+	}
+	if err := s.RevokeDevice(ctx, "dev-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DeviceKey(ctx, "dev-1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("revoked device key = %v", err)
+	}
+	if err := s.PutDevice(ctx, "dev-1", "key-d"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("re-register revoked device = %v", err)
 	}
 
 	// Mac keys: first come first served.

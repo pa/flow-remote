@@ -1,10 +1,13 @@
 package mailbox
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -25,21 +28,28 @@ const (
 
 	phonePerHour = 30  // from the plan's threat model
 	relayPerHour = 600 // caps a runaway session, well above normal use
+
+	// Expired envelopes are deleted in passing, at most this often. The
+	// relay calls in at least once a minute, so no scheduled job is needed.
+	cleanupEvery = time.Hour
+
+	HeaderSetup = "X-FR-Setup"
 )
 
+// Server is the mailbox API. Nobody signs in: the Mac signs requests with
+// its key, each phone with its device key, and the mailbox only knows the
+// public halves. The Mac registers once with the setup token; devices are
+// registered by the Mac after you confirm pairing.
 type Server struct {
 	Store Store
-	// Owner is the one Google account allowed to use this mailbox.
-	Owner string
-	// Tokens verifies phone sign-ins. nil with DevAuth means local only.
-	Tokens *FirebaseVerifier
-	// DevAuth accepts "Bearer dev:<email>". Never set it on Cloud Run;
-	// cmd/mailbox refuses to start with it there.
-	DevAuth bool
-	Now     func() time.Time
-	Log     *slog.Logger
+	// SetupToken lets a Mac register its key. Empty disables registration.
+	SetupToken string
+	Now        func() time.Time
+	Log        *slog.Logger
 
-	limits limiter
+	limits      limiter
+	cleanupMu   sync.Mutex
+	lastCleanup time.Time
 }
 
 func (s *Server) now() time.Time {
@@ -53,154 +63,168 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
 
-	// Phone endpoints: Google sign-in as the owner.
-	mux.HandleFunc("POST /v1/pair/{pair}", s.phone(s.postPair))
-	mux.HandleFunc("POST /v1/envelopes", s.phone(s.phonePost))
-	mux.HandleFunc("GET /v1/envelopes", s.phone(s.phoneList))
-	mux.HandleFunc("POST /v1/ack", s.phone(s.phoneAck))
-	mux.HandleFunc("GET /v1/status", s.phone(s.status))
+	mux.HandleFunc("POST /v1/macs", s.registerMac)
 
-	// Relay endpoints. Pairing pickup uses the pair id as a capability,
-	// since the Mac isn't registered until the phone has sent it.
-	mux.HandleFunc("GET /v1/pair/{pair}", s.takePair)
-	mux.HandleFunc("GET /v1/relay/envelopes", s.relay(s.relayList))
-	mux.HandleFunc("POST /v1/relay/envelopes", s.relay(s.relayPost))
-	mux.HandleFunc("POST /v1/relay/ack", s.relay(s.relayAck))
+	// Phone. Pairing is the one unsigned call: the device key isn't
+	// registered yet, and the slot has to have been opened by the Mac.
+	mux.HandleFunc("POST /v1/pair/{pair}", s.postPair)
+	mux.HandleFunc("POST /v1/envelopes", s.device(s.phonePost))
+	mux.HandleFunc("GET /v1/envelopes", s.device(s.phoneList))
+	mux.HandleFunc("POST /v1/ack", s.device(s.phoneAck))
+	mux.HandleFunc("GET /v1/status", s.device(s.status))
+
+	// Relay.
+	mux.HandleFunc("POST /v1/relay/pairs", s.mac(s.openPair))
+	mux.HandleFunc("GET /v1/relay/pairs/{pair}", s.mac(s.takePair))
+	mux.HandleFunc("POST /v1/relay/devices", s.mac(s.putDevice))
+	mux.HandleFunc("POST /v1/relay/devices/{id}/revoke", s.mac(s.revokeDevice))
+	mux.HandleFunc("GET /v1/relay/envelopes", s.mac(s.relayList))
+	mux.HandleFunc("POST /v1/relay/envelopes", s.mac(s.relayPost))
+	mux.HandleFunc("POST /v1/relay/ack", s.mac(s.relayAck))
 	return mux
 }
 
 // ---- auth ----
 
-type ctxKey struct{}
+type handler func(http.ResponseWriter, *http.Request, string)
 
-func (s *Server) phone(h http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		email, err := s.phoneEmail(r)
-		if err != nil {
-			s.fail(w, http.StatusUnauthorized, "sign in as the owner")
-			return
-		}
-		if !strings.EqualFold(email, s.Owner) {
-			s.fail(w, http.StatusForbidden, "this mailbox belongs to someone else")
-			return
-		}
-		s.Store.Touch(r.Context(), "phone", s.now())
-		h(w, r)
-	}
-}
-
-func (s *Server) phoneEmail(r *http.Request) (string, error) {
-	tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if !ok {
-		return "", ErrToken
-	}
-	if s.DevAuth {
-		if email, ok := strings.CutPrefix(tok, "dev:"); ok {
-			return email, nil
-		}
-	}
-	if s.Tokens == nil {
-		return "", ErrToken
-	}
-	c, err := s.Tokens.Verify(tok, s.now())
-	if err != nil {
-		return "", err
-	}
-	return c.Email, nil
-}
-
-func (s *Server) relay(h func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
+func (s *Server) signed(prefix, presence string, keyFor func(context.Context, string) (string, error), h handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
-		macID, err := reqsig.Verify(r, func(id string) (*ecdsa.PublicKey, error) {
-			k, err := s.Store.MacKey(r.Context(), id)
+		id, err := reqsig.Verify(r, func(id string) (*ecdsa.PublicKey, error) {
+			if !strings.HasPrefix(id, prefix) {
+				return nil, reqsig.ErrUnsigned
+			}
+			k, err := keyFor(r.Context(), id)
 			if err != nil {
 				return nil, err
 			}
 			return envelope.ParseSignPub(k)
 		}, s.now())
 		if err != nil {
-			s.fail(w, http.StatusUnauthorized, "unsigned or unknown relay")
+			s.fail(w, http.StatusUnauthorized, "unsigned, or signed by an unknown key")
 			return
 		}
-		s.Store.Touch(r.Context(), "mac:"+macID, s.now())
-		h(w, r, macID)
+		who := presence
+		if who == "" {
+			who = "mac:" + id
+		}
+		s.Store.Touch(r.Context(), who, s.now())
+		s.maybeCleanup(r.Context())
+		h(w, r, id)
 	}
+}
+
+func (s *Server) device(h handler) http.HandlerFunc {
+	return s.signed("dev-", "phone", s.Store.DeviceKey, h)
+}
+
+func (s *Server) mac(h handler) http.HandlerFunc {
+	return s.signed("mac-", "", s.Store.MacKey, h)
+}
+
+// registerMac needs the setup token and a request signed by the key being
+// registered, so the token alone can't register someone else's key.
+func (s *Server) registerMac(w http.ResponseWriter, r *http.Request) {
+	tok := r.Header.Get(HeaderSetup)
+	if s.SetupToken == "" || subtle.ConstantTimeCompare([]byte(tok), []byte(s.SetupToken)) != 1 {
+		s.fail(w, http.StatusForbidden, "wrong or missing setup token")
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
+	if err != nil {
+		s.fail(w, http.StatusBadRequest, "body too large")
+		return
+	}
+	var req struct {
+		MacID   string `json:"mac_id"`
+		SignPub string `json:"sign_pub"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || !strings.HasPrefix(req.MacID, "mac-") {
+		s.fail(w, http.StatusBadRequest, "bad registration")
+		return
+	}
+	key, err := envelope.ParseSignPub(req.SignPub)
+	if err != nil {
+		s.fail(w, http.StatusBadRequest, "bad mac key")
+		return
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	_, err = reqsig.Verify(r, func(id string) (*ecdsa.PublicKey, error) {
+		if id != req.MacID {
+			return nil, reqsig.ErrUnsigned
+		}
+		return key, nil
+	}, s.now())
+	if err != nil {
+		s.fail(w, http.StatusUnauthorized, "registration must be signed by the key it registers")
+		return
+	}
+	if err := s.Store.RegisterMac(r.Context(), req.MacID, req.SignPub); err != nil {
+		s.storeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ---- phone ----
 
 func (s *Server) postPair(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		MacID      string            `json:"mac_id"`
-		MacSignPub string            `json:"mac_sign_pub"`
-		Env        envelope.Envelope `json:"env"`
-	}
-	if !s.decode(w, r, &req) {
+	var e envelope.Envelope
+	if !s.decode(w, r, &e) {
 		return
 	}
-	if _, err := envelope.ParseSignPub(req.MacSignPub); err != nil || req.Env.To != req.MacID {
-		s.fail(w, http.StatusBadRequest, "bad pairing request")
+	if !strings.HasPrefix(e.From, "dev-") || !strings.HasPrefix(e.To, "mac-") {
+		s.fail(w, http.StatusBadRequest, "bad pairing envelope")
 		return
 	}
-	ctx := r.Context()
-	if err := s.Store.RegisterMac(ctx, req.MacID, req.MacSignPub); err != nil {
-		s.storeErr(w, err)
-		return
-	}
-	if err := s.Store.PutPair(ctx, r.PathValue("pair"), req.Env, s.now()); err != nil {
+	if err := s.Store.PutPair(r.Context(), r.PathValue("pair"), e, s.now()); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			s.fail(w, http.StatusNotFound, "no open pairing with that code; run `relay pair` again")
+			return
+		}
 		s.storeErr(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
 }
 
-func (s *Server) phonePost(w http.ResponseWriter, r *http.Request) {
+func (s *Server) phonePost(w http.ResponseWriter, r *http.Request, dev string) {
 	var e envelope.Envelope
 	if !s.decode(w, r, &e) {
 		return
 	}
-	if !strings.HasPrefix(e.From, "dev-") || !strings.HasPrefix(e.To, "mac-") {
-		s.fail(w, http.StatusBadRequest, "phones send from a device to a mac")
+	if e.From != dev || !strings.HasPrefix(e.To, "mac-") {
+		s.fail(w, http.StatusBadRequest, "a device sends as itself, to a mac")
 		return
 	}
 	if _, err := s.Store.MacKey(r.Context(), e.To); err != nil {
-		s.fail(w, http.StatusNotFound, "no such mac; pair first")
+		s.fail(w, http.StatusNotFound, "no such mac")
 		return
 	}
-	if !s.limits.allow(e.From, phonePerHour, s.now()) {
+	if !s.limits.allow(dev, phonePerHour, s.now()) {
 		s.fail(w, http.StatusTooManyRequests, "limit is 30 messages an hour per device")
 		return
 	}
 	s.put(w, r.Context(), e)
 }
 
-func (s *Server) phoneList(w http.ResponseWriter, r *http.Request) {
-	to := r.URL.Query().Get("to")
-	if !strings.HasPrefix(to, "dev-") {
-		s.fail(w, http.StatusBadRequest, "to must be a device id")
-		return
-	}
-	s.list(w, r.Context(), to, nil)
+func (s *Server) phoneList(w http.ResponseWriter, r *http.Request, dev string) {
+	s.list(w, r.Context(), dev, nil)
 }
 
-func (s *Server) phoneAck(w http.ResponseWriter, r *http.Request) {
+func (s *Server) phoneAck(w http.ResponseWriter, r *http.Request, dev string) {
 	var req struct {
-		To  string   `json:"to"`
 		IDs []string `json:"ids"`
 	}
 	if !s.decode(w, r, &req) {
 		return
 	}
-	if !strings.HasPrefix(req.To, "dev-") {
-		s.fail(w, http.StatusBadRequest, "to must be a device id")
-		return
-	}
-	s.ack(w, r.Context(), req.To, req.IDs)
+	s.ack(w, r.Context(), dev, req.IDs)
 }
 
-// status tells the phone when each Mac it knows about last checked in.
-func (s *Server) status(w http.ResponseWriter, r *http.Request) {
+// status tells the phone when each Mac last checked in.
+func (s *Server) status(w http.ResponseWriter, r *http.Request, _ string) {
 	out := map[string]any{}
 	for _, id := range r.URL.Query()["mac"] {
 		t, _ := s.Store.LastSeen(r.Context(), "mac:"+id)
@@ -211,13 +235,62 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 
 // ---- relay ----
 
-func (s *Server) takePair(w http.ResponseWriter, r *http.Request) {
+func (s *Server) openPair(w http.ResponseWriter, r *http.Request, _ string) {
+	var req struct {
+		PairID string `json:"pair_id"`
+	}
+	if !s.decode(w, r, &req) {
+		return
+	}
+	if len(req.PairID) < 16 {
+		s.fail(w, http.StatusBadRequest, "pair id too short")
+		return
+	}
+	if err := s.Store.OpenPair(r.Context(), req.PairID, s.now()); err != nil {
+		s.storeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+}
+
+func (s *Server) takePair(w http.ResponseWriter, r *http.Request, _ string) {
 	e, err := s.Store.TakePair(r.Context(), r.PathValue("pair"), s.now())
 	if err != nil {
 		s.storeErr(w, err)
 		return
 	}
 	s.json(w, http.StatusOK, e)
+}
+
+func (s *Server) putDevice(w http.ResponseWriter, r *http.Request, _ string) {
+	var req struct {
+		DeviceID string `json:"device_id"`
+		SignPub  string `json:"sign_pub"`
+	}
+	if !s.decode(w, r, &req) {
+		return
+	}
+	if !strings.HasPrefix(req.DeviceID, "dev-") {
+		s.fail(w, http.StatusBadRequest, "bad device id")
+		return
+	}
+	if _, err := envelope.ParseSignPub(req.SignPub); err != nil {
+		s.fail(w, http.StatusBadRequest, "bad device key")
+		return
+	}
+	if err := s.Store.PutDevice(r.Context(), req.DeviceID, req.SignPub); err != nil {
+		s.storeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) revokeDevice(w http.ResponseWriter, r *http.Request, _ string) {
+	if err := s.Store.RevokeDevice(r.Context(), r.PathValue("id")); err != nil {
+		s.storeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) relayList(w http.ResponseWriter, r *http.Request, macID string) {
@@ -255,6 +328,22 @@ func (s *Server) relayAck(w http.ResponseWriter, r *http.Request, macID string) 
 }
 
 // ---- shared ----
+
+func (s *Server) maybeCleanup(ctx context.Context) {
+	s.cleanupMu.Lock()
+	due := s.now().Sub(s.lastCleanup) >= cleanupEvery
+	if due {
+		s.lastCleanup = s.now()
+	}
+	s.cleanupMu.Unlock()
+	if !due {
+		return
+	}
+	n, err := s.Store.DeleteExpired(ctx, s.now())
+	if s.Log != nil {
+		s.Log.Info("cleanup", "deleted", n, "err", err)
+	}
+}
 
 func (s *Server) put(w http.ResponseWriter, ctx context.Context, e envelope.Envelope) {
 	if e.V != envelope.Version || e.ID == "" || e.Sig == "" || e.CT == "" {
@@ -311,7 +400,7 @@ func (s *Server) storeErr(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrExists):
 		s.fail(w, http.StatusConflict, "already exists")
 	case errors.Is(err, ErrConflict):
-		s.fail(w, http.StatusConflict, "that mac id is registered with a different key")
+		s.fail(w, http.StatusConflict, "that id is registered with a different key, or revoked")
 	case errors.Is(err, ErrNotFound):
 		s.fail(w, http.StatusNotFound, "not found")
 	default:

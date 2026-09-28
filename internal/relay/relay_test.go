@@ -22,6 +22,7 @@ import (
 	"github.com/pa/flow-remote/internal/keystore"
 	"github.com/pa/flow-remote/internal/mailbox"
 	"github.com/pa/flow-remote/internal/protocol"
+	"github.com/pa/flow-remote/internal/reqsig"
 )
 
 type fakeFlow struct {
@@ -58,12 +59,11 @@ func (f *fakeFlow) MarkRead(_ context.Context, id string) error {
 	return nil
 }
 
-const owner = "owner@example.com"
-
 type rig struct {
 	t      *testing.T
 	now    time.Time
 	srv    *httptest.Server
+	store  *mailbox.Memory
 	relay  *Relay
 	flow   *fakeFlow
 	audit  *bytes.Buffer
@@ -76,7 +76,8 @@ func newRig(t *testing.T) *rig {
 	r := &rig{t: t, now: time.Now(), audit: &bytes.Buffer{}}
 	clock := func() time.Time { return r.now }
 	store := mailbox.NewMemory()
-	r.srv = httptest.NewServer((&mailbox.Server{Store: store, Owner: owner, DevAuth: true, Now: clock}).Handler())
+	r.store = store
+	r.srv = httptest.NewServer((&mailbox.Server{Store: store, Now: clock}).Handler())
 	t.Cleanup(r.srv.Close)
 
 	ks := &keystore.Memory{}
@@ -91,6 +92,7 @@ func newRig(t *testing.T) *rig {
 	}
 	devs.Enroll(r.device)
 	store.RegisterMac(context.Background(), mac.ID, mac.SignPub())
+	store.PutDevice(context.Background(), r.device.ID, r.device.SignPub)
 
 	r.flow = &fakeFlow{tasks: []flowcli.Task{
 		{Slug: "phone-dispatch", Name: "dispatcher", Live: true},
@@ -107,11 +109,27 @@ func newRig(t *testing.T) *rig {
 	return r
 }
 
+// phoneDo sends a request signed with the phone's device key.
+func (r *rig) phoneDo(method, path string, body any) *http.Response {
+	r.t.Helper()
+	var raw []byte
+	if body != nil {
+		raw, _ = json.Marshal(body)
+	}
+	req, _ := http.NewRequest(method, r.srv.URL+path, bytes.NewReader(raw))
+	reqsig.Sign(req, r.device.ID, r.sign, raw, r.now)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	return resp
+}
+
 func (r *rig) phonePost(e *envelope.Envelope) {
 	r.t.Helper()
 	raw, _ := json.Marshal(e)
 	req, _ := http.NewRequest("POST", r.srv.URL+"/v1/envelopes", bytes.NewReader(raw))
-	req.Header.Set("Authorization", "Bearer dev:"+owner)
+	reqsig.Sign(req, r.device.ID, r.sign, raw, r.now)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil || resp.StatusCode != http.StatusAccepted {
 		r.t.Fatalf("phone post: %v %v", err, resp.Status)
@@ -128,9 +146,7 @@ func (r *rig) phoneSend(m protocol.Msg, ts time.Time) *envelope.Envelope {
 // inbox fetches, verifies and opens everything waiting for the phone.
 func (r *rig) inbox() []protocol.Msg {
 	r.t.Helper()
-	req, _ := http.NewRequest("GET", r.srv.URL+"/v1/envelopes?to="+r.device.ID, nil)
-	req.Header.Set("Authorization", "Bearer dev:"+owner)
-	resp, _ := http.DefaultClient.Do(req)
+	resp := r.phoneDo("GET", "/v1/envelopes", nil)
 	var got struct{ Envelopes []mailbox.Record }
 	json.NewDecoder(resp.Body).Decode(&got)
 	var out, ids = []protocol.Msg{}, []string{}
@@ -148,10 +164,7 @@ func (r *rig) inbox() []protocol.Msg {
 		out = append(out, m)
 		ids = append(ids, e.ID)
 	}
-	raw, _ := json.Marshal(map[string]any{"to": r.device.ID, "ids": ids})
-	ack, _ := http.NewRequest("POST", r.srv.URL+"/v1/ack", bytes.NewReader(raw))
-	ack.Header.Set("Authorization", "Bearer dev:"+owner)
-	http.DefaultClient.Do(ack)
+	r.phoneDo("POST", "/v1/ack", map[string]any{"ids": ids})
 	return out
 }
 
@@ -239,15 +252,18 @@ func TestReplayAndStrangers(t *testing.T) {
 		t.Fatalf("replayed envelope delivered: %q", r.flow.sent)
 	}
 
+	// The mailbox refuses these two itself. The relay mustn't rely on that,
+	// since the mailbox is untrusted, so plant them as a compromised
+	// mailbox would.
 	// A device that was never enrolled.
 	s2, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	pt, _ := json.Marshal(protocol.Msg{Kind: protocol.KindSend, Task: "phone-dispatch", Body: "hi"})
 	stranger, _ := envelope.Seal(pt, s2, "dev-stranger00", r.relay.Mac.ID, r.relay.Mac.Box.PublicKey(), r.now.UnixMilli())
-	r.phonePost(stranger)
+	r.store.PutEnvelope(context.Background(), *stranger, r.now)
 
 	// An enrolled device id, signed by someone else's key.
 	forged, _ := envelope.Seal(pt, s2, r.device.ID, r.relay.Mac.ID, r.relay.Mac.Box.PublicKey(), r.now.UnixMilli())
-	r.phonePost(forged)
+	r.store.PutEnvelope(context.Background(), *forged, r.now)
 	r.tick()
 	if len(r.flow.sent) != 1 {
 		t.Fatalf("stranger or forgery delivered: %q", r.flow.sent)

@@ -76,3 +76,36 @@ In this order:
 
 The guard only records an id after the signature check, so a forger can't
 use up ids that real messages would later need.
+
+## Requests to the mailbox
+
+Nobody signs in. Every call to the mailbox is signed, except the phone's
+single pairing post, and the mailbox only ever holds public keys.
+
+| Header | Value |
+| --- | --- |
+| `X-FR-Key` | the signer's id: `mac-…` or `dev-…` |
+| `X-FR-TS` | the signer's clock, unix milliseconds; rejected if more than 2 minutes off |
+| `X-FR-Sig` | ECDSA P-256 over `"flow-remote/v1 req\n" + method + "\n" + path_with_query + "\n" + ts + "\n" + hex(sha256(body))`, raw `r \|\| s` |
+
+`internal/reqsig` (Go) and `web/js/api.js` (WebCrypto) produce the same
+signature, and `go test ./internal/reqsig` checks it.
+
+Keys reach the mailbox in this order:
+
+1. **The Mac registers once.** `relay setup` posts its id and sign key to
+   `/v1/macs` with the `X-FR-Setup` header, which must equal the mailbox's
+   `MAILBOX_SETUP_TOKEN`. The request must also be signed by the key it
+   registers, so someone holding the token alone can't register a
+   different key. A mac id keeps its first key.
+2. **The Mac opens a pairing slot.** `relay pair` opens a slot for the
+   offer's pair id. The phone posts its enrollment into that slot, and
+   that's the only unsigned call. A slot takes one enrollment and expires
+   after 2 minutes.
+3. **The Mac registers the device** once you confirm the fingerprint.
+   From then on the mailbox accepts requests signed by that device key.
+   `relay revoke` revokes it there as well, and a revoked id can't be
+   registered again.
+
+Ids are checked by prefix: a device key can't call relay endpoints, and a
+device can only send envelopes as itself.

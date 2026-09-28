@@ -1,11 +1,10 @@
 // Caches the app shell so it opens offline. API calls always go to the
 // network: they're authenticated and must never be served from a cache.
-const CACHE = "flow-remote-v1";
+const CACHE = "flow-remote-v2";
 const SHELL = [
-  "./", "./index.html", "./app.css", "./manifest.webmanifest", "./icon.svg", "./config.js",
-  "./js/app.js", "./js/api.js", "./js/auth.js", "./js/db.js", "./js/envelope.js", "./js/pairing.js",
+  "./", "./index.html", "./app.css", "./manifest.webmanifest", "./icon.svg",
+  "./js/app.js", "./js/api.js", "./js/db.js", "./js/envelope.js", "./js/pairing.js",
   "./vendor/jsqr-1.4.0/jsQR.js",
-  "./vendor/firebase-12.19.0/firebase-app.js", "./vendor/firebase-12.19.0/firebase-auth.js",
 ];
 
 self.addEventListener("install", (e) => {
@@ -21,7 +20,7 @@ self.addEventListener("activate", (e) => {
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (url.origin !== location.origin || e.request.method !== "GET") return;
-  if (url.pathname.startsWith("/v1/") || url.pathname.startsWith("/__/") || url.pathname === "/healthz") return;
+  if (url.pathname.startsWith("/v1/") || url.pathname === "/healthz") return;
   // Network first, so a deploy shows up on the next open; cache when offline.
   e.respondWith(
     fetch(e.request)
