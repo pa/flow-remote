@@ -9,6 +9,8 @@
 //	FIREBASE_PROJECT_ID   project whose ID tokens are accepted
 //	FIREBASE_TENANT_ID    Identity Platform tenant, if the app has one
 //	MAILBOX_STORE         "memory" (default) or "mongo"
+//	MAILBOX_MONGO_URI     connection string, for "mongo"
+//	MAILBOX_MONGO_DB      database name (default "flow-remote")
 //	MAILBOX_DEV_AUTH=1    accept "Bearer dev:<email>" (local only)
 //	MAILBOX_WEB_DIR       also serve the phone app from this directory
 //	                      (local only; on GCP, Firebase Hosting serves it)
@@ -40,7 +42,7 @@ func run(log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	store, err := openStore()
+	store, err := openStore(ctx)
 	if err != nil {
 		return err
 	}
@@ -98,11 +100,25 @@ func run(log *slog.Logger) error {
 	return nil
 }
 
-func openStore() (mailbox.Store, error) {
+func openStore(ctx context.Context) (mailbox.Store, error) {
 	switch kind := os.Getenv("MAILBOX_STORE"); kind {
 	case "", "memory":
+		if os.Getenv("K_SERVICE") != "" {
+			// Cloud Run scales to zero and would drop every envelope.
+			return nil, errors.New("MAILBOX_STORE=memory loses data on Cloud Run; use mongo")
+		}
 		return mailbox.NewMemory(), nil
+	case "mongo":
+		uri := os.Getenv("MAILBOX_MONGO_URI")
+		if uri == "" {
+			return nil, errors.New("MAILBOX_MONGO_URI is required for MAILBOX_STORE=mongo")
+		}
+		name := os.Getenv("MAILBOX_MONGO_DB")
+		if name == "" {
+			name = "flow-remote"
+		}
+		return mailbox.OpenMongo(ctx, uri, name)
 	default:
-		return nil, fmt.Errorf("MAILBOX_STORE=%q is not supported yet", kind)
+		return nil, fmt.Errorf("MAILBOX_STORE=%q: want memory or mongo", kind)
 	}
 }
