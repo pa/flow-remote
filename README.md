@@ -211,7 +211,7 @@ version, and attaches them with `checksums.txt` to a GitHub release.
 
 ```bash
 go test ./...                       # includes WebCrypto interop tests under Node
-node --test web/js                  # the phone app's own tests (fuzzy search)
+node --test web/js/*.test.mjs       # the phone app's own tests (fuzzy search)
 FLOW_REMOTE_MONGO_URI=mongodb://127.0.0.1:27017 go test ./internal/mailbox/   # the Mongo store
 
 # A local mailbox with the app, in memory:

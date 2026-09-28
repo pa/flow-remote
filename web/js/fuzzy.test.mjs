@@ -1,4 +1,4 @@
-// node --test web/js
+// node --test web/js/*.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fuzzyMatch, search } from "./fuzzy.js";
