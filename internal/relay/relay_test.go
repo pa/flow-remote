@@ -324,6 +324,9 @@ func TestAllowlist(t *testing.T) {
 	if a.Allows("a", nil) {
 		t.Fatal("comment parsed as rule")
 	}
+	if !ParseAllowlist("*\n").Allows("anything", nil) {
+		t.Fatal("* should allow every live session")
+	}
 }
 
 func TestAge(t *testing.T) {

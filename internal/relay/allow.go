@@ -12,6 +12,7 @@ import (
 const defaultAllow = `# Sessions the phone may send messages to. One rule per line:
 #   a task slug       phone-dispatch
 #   a tag             #personal
+#   every live one    *
 # Every live session is still listed on the phone; the rest are read-only.
 # Customer tasks don't belong here until Phase 2's policy adds Ask-only mode.
 phone-dispatch
@@ -19,6 +20,7 @@ phone-dispatch
 
 // Allowlist is the Phase 1 stand-in for policy.yaml.
 type Allowlist struct {
+	all   bool
 	slugs map[string]bool
 	tags  map[string]bool
 }
@@ -48,7 +50,9 @@ func ParseAllowlist(text string) *Allowlist {
 		if line == "" || strings.HasPrefix(line, "# ") || line == "#" {
 			continue
 		}
-		if tag, ok := strings.CutPrefix(line, "#"); ok {
+		if line == "*" {
+			a.all = true
+		} else if tag, ok := strings.CutPrefix(line, "#"); ok {
 			a.tags[tag] = true
 		} else {
 			a.slugs[line] = true
@@ -58,7 +62,7 @@ func ParseAllowlist(text string) *Allowlist {
 }
 
 func (a *Allowlist) Allows(slug string, tags []string) bool {
-	if a.slugs[slug] {
+	if a.all || a.slugs[slug] {
 		return true
 	}
 	return slices.ContainsFunc(tags, func(t string) bool { return a.tags[t] })

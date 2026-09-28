@@ -110,6 +110,7 @@ function welcomeScreen() {
     h("h1", { class: "brand" }, "Pair with your Mac"),
     h("p", { class: "muted" }, "On the Mac, run ", h("code", {}, "relay pair"), ". Then scan the QR code it shows."),
     h("button", { class: "primary", onclick: () => go("scan") }, "Scan the QR code"),
+    (() => { const note = h("p", { class: "muted" }); return h("div", {}, photoButton(note), note); })(),
     pasteBox(),
     state.error ? h("p", { class: "error" }, state.error) : null);
 }
@@ -142,18 +143,60 @@ function scanScreen() {
   const note = h("p", { class: "muted" }, "Point the camera at the QR code on your Mac.");
   const view = h("main", {},
     bar("Scan", { back: () => { stopScan?.(); go("sessions"); } }),
-    h("div", { class: "scan" }, video), note);
+    h("div", { class: "scan" }, video), note,
+    h("div", { class: "pad" }, photoButton(note)));
   startScan(video, note);
   return view;
+}
+
+// photoButton decodes a QR code from a still photo. It goes through the
+// ordinary camera picker, so it works where live camera access doesn't
+// (some iOS home-screen apps, a denied camera permission).
+function photoButton(note) {
+  const input = h("input", { type: "file", accept: "image/*", capture: "environment", hidden: true });
+  input.addEventListener("change", async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    note.textContent = "Reading the photo…";
+    try {
+      const data = await decodeQRFromFile(file);
+      if (!data?.includes("#pair=")) throw new Error("No pairing QR code found in that photo. Try again, closer and straight on.");
+      stopScan?.();
+      takeOffer(data);
+    } catch (e) {
+      note.textContent = e.message;
+    }
+  });
+  return h("label", { class: "photo" }, input,
+    h("span", { class: "button-like" }, "Take a photo of the QR code instead"));
+}
+
+async function decodeQRFromFile(file) {
+  const bitmap = await createImageBitmap(file);
+  // Scale big photos down: jsQR is slow on 12 MP images and doesn't need them.
+  const scale = Math.min(1, 1200 / Math.max(bitmap.width, bitmap.height));
+  const w = Math.round(bitmap.width * scale), hgt = Math.round(bitmap.height * scale);
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = hgt;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(bitmap, 0, 0, w, hgt);
+  const img = ctx.getImageData(0, 0, w, hgt);
+  const code = globalThis.jsQR?.(img.data, w, hgt, { inversionAttempts: "attemptBoth" });
+  return code?.data;
 }
 
 async function startScan(video, note) {
   stopScan?.();
   let stream;
   try {
+    if (!navigator.mediaDevices?.getUserMedia) throw Object.assign(new Error("this browser gives web apps no live camera"), { name: "NotSupported" });
     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-  } catch {
-    note.textContent = "The camera isn't available. Paste the pairing link instead.";
+  } catch (e) {
+    const why = e.name === "NotAllowedError"
+      ? "Camera access is blocked. Allow it in Settings, or take a photo instead."
+      : `The live camera didn't start (${e.name}: ${e.message}). Take a photo instead.`;
+    note.textContent = why;
     return;
   }
   let running = true;

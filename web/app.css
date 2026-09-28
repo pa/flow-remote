@@ -86,3 +86,5 @@ main > .muted { padding: 0 16px; text-align: center; }
 .composer textarea { resize: none; }
 .replying { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
 .replying span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.photo { display: block; }
+.photo .button-like { display: block; text-align: center; border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; cursor: pointer; }
