@@ -166,10 +166,73 @@ function clock(ms) {
   return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function go(view, extra = {}) {
+// ---- navigation ----
+
+// Screens past the sessions list get a history entry, so Android's back
+// button (and gesture) steps back instead of leaving the app. An installed
+// iOS app has no system back gesture, so it gets a left-edge swipe below.
+const DEEP = new Set(["thread", "settings", "scan"]);
+const isDeep = (view) => DEEP.has(view) || (view === "welcome" && state.pairings.length > 0);
+
+function go(view, extra = {}, { fromHistory = false } = {}) {
+  const wasDeep = isDeep(state.view);
   Object.assign(state, { view, error: "" }, extra);
+  if (!fromHistory) {
+    if (isDeep(view) && !wasDeep) history.pushState({ fr: view }, "");
+    else if (isDeep(view)) history.replaceState({ fr: view }, "");
+  }
   render();
 }
+
+// goBack is what every back button does.
+function goBack() {
+  stopScan?.();
+  if (history.state?.fr) history.back(); // popstate brings us to sessions
+  else go(state.pairings.length ? "sessions" : "welcome");
+}
+
+window.addEventListener("popstate", () => {
+  stopScan?.();
+  if (!isDeep(state.view)) return;
+  go(state.pairings.length ? "sessions" : "welcome", { offer: null }, { fromHistory: true });
+});
+
+// Left-edge swipe back, for installed iOS apps. It follows the finger and
+// commits past a third of the width or on a quick flick, like native iOS.
+(function edgeSwipe() {
+  if (!(env.os === "ios" && env.kind === "phone-app")) return;
+  let start = null;
+  const page = () => root.querySelector("main");
+  document.addEventListener("touchstart", (e) => {
+    if (!isDeep(state.view) || e.touches.length !== 1 || e.touches[0].clientX > 24) return;
+    start = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now(), dx: 0, horizontal: null };
+  }, { passive: true });
+  document.addEventListener("touchmove", (e) => {
+    if (!start) return;
+    const dx = e.touches[0].clientX - start.x, dy = e.touches[0].clientY - start.y;
+    if (start.horizontal === null && Math.abs(dx) + Math.abs(dy) > 8) start.horizontal = Math.abs(dx) > Math.abs(dy);
+    if (!start.horizontal) return;
+    start.dx = Math.max(0, dx);
+    const m = page();
+    if (m) { m.style.transition = "none"; m.style.transform = `translateX(${start.dx}px)`; }
+  }, { passive: true });
+  document.addEventListener("touchend", () => {
+    if (!start) return;
+    const { dx, t, horizontal } = start;
+    start = null;
+    const m = page();
+    if (!m || !horizontal) return;
+    const fast = dx > 40 && dx / Math.max(1, Date.now() - t) > 0.5;
+    if (dx > innerWidth / 3 || fast) {
+      m.style.transition = "transform 0.18s ease-out";
+      m.style.transform = `translateX(${innerWidth}px)`;
+      setTimeout(goBack, 170);
+    } else {
+      m.style.transition = "transform 0.18s ease-out";
+      m.style.transform = "";
+    }
+  });
+})();
 
 async function savePairings() {
   // Keys are CryptoKeys; IndexedDB stores them without making them extractable.
@@ -189,7 +252,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v13";
+const BUILD = "v14";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -404,7 +467,7 @@ function guideScreen(adding) {
   const note = h("p", { class: "muted" });
   const desktop = env.kind === "desktop";
   return h("main", {},
-    bar(adding ? "Pair another Mac" : "Get started", adding ? { back: () => go("settings") } : {}),
+    bar(adding ? "Pair another Mac" : "Get started", adding ? { back: goBack } : {}),
     adding ? null : h("div", { class: "pad center-text" },
       h("img", { class: "logo", src: "icon.svg", alt: "" }),
       h("h1", { class: "brand" }, "flow-remote"),
@@ -476,7 +539,7 @@ function scanScreen() {
   // nothing for a while; most of the time scanning just works.
   const fallback = h("div", { class: "pad", hidden: true }, photoButton(note));
   const view = h("main", {},
-    bar("Scan", { back: () => { stopScan?.(); go("welcome"); } }),
+    bar("Scan", { back: goBack }),
     h("div", { class: "scan" }, video), note, fallback);
   startScan(video, note, () => { fallback.hidden = false; });
   return view;
@@ -678,17 +741,20 @@ function sessionsScreen(p) {
   const liveSlugs = new Set(live.map((s) => s.slug));
   const earlier = [...tasksWithItems].filter((t) => !liveSlugs.has(t)).sort();
 
-  const row = (slug, sub, chip, chipClass, marks = {}) => {
+  const row = (slug, sub, chip, chipClass, marks = {}, where = "") => {
     const n = unreadCount(p.mac_id, slug);
     return h("button", { class: "row", onclick: () => openThread(slug) },
       h("div", { class: "top" },
         h("span", { class: "slug" }, hl(slug, marks.slug)),
         n ? h("span", { class: "badge" }, n) : null,
         h("span", { class: `chip ${chipClass}` }, chip)),
-      sub ? h("span", { class: "sub" }, hl(sub, marks.sub)) : null);
+      sub ? h("span", { class: "sub" }, hl(sub, marks.sub)) : null,
+      where ? h("span", { class: "where" }, hl(where, marks.where)) : null);
   };
+  // project · #tag #tag, the task's place in flow.
+  const whereOf = (s) => [s.project, (s.tags || []).map((t) => "#" + t).join(" ")].filter(Boolean).join(" · ");
   const liveRow = (s, marks) => row(s.slug, s.waiting_on ? `waiting on ${s.waiting_on}` : s.name,
-    s.can_send ? "live" : "read only", s.can_send ? "live" : "ro", marks);
+    s.can_send ? "live" : "read only", s.can_send ? "live" : "ro", marks, whereOf(s));
 
   const searchBox = h("input", {
     class: "search", type: "search", placeholder: "Search sessions and messages", value: state.query,
@@ -701,15 +767,15 @@ function sessionsScreen(p) {
   if (q) {
     // Sessions: live ones with their details, plus threads no longer running.
     const pool = [
-      ...live.map((s) => ({ ...s, sub: s.waiting_on ? `waiting on ${s.waiting_on}` : s.name, tagText: (s.tags || []).map((t) => "#" + t).join(" "), live: true })),
+      ...live.map((s) => ({ ...s, sub: s.waiting_on ? `waiting on ${s.waiting_on}` : s.name, where: whereOf(s), live: true })),
       ...earlier.map((slug) => ({ slug, sub: "", live: false })),
     ];
-    const hits = search(q, pool, { slug: 3, sub: 1.5, project: 1, tagText: 1 });
+    const hits = search(q, pool, { slug: 3, sub: 1.5, where: 1 });
     const msgHits = search(q, mine, { body: 1 }).slice(0, 20);
     body = [
       hits.length ? h("h2", { class: "section" }, "Sessions") : null,
       hits.map(({ item, field, positions }) => {
-        const marks = field === "slug" ? { slug: positions } : field === "sub" ? { sub: positions } : {};
+        const marks = { [field]: positions };
         return item.live ? liveRow(item, marks) : row(item.slug, "", "not running", "off", marks);
       }),
       msgHits.length ? h("h2", { class: "section" }, "Messages") : null,
@@ -744,7 +810,7 @@ function sessionsScreen(p) {
             h("span", { class: "badge" }, n),
             h("span", { class: "meta" }, ago(it.ts))),
           h("span", { class: "preview" }, it.body),
-          s ? null : h("span", { class: "sub" }, "not running"));
+          s ? (whereOf(s) ? h("span", { class: "where" }, whereOf(s)) : null) : h("span", { class: "sub" }, "not running"));
       }),
       replied.length && live.some((s) => !repliedSet.has(s.slug)) ? h("h2", { class: "section" }, "Sessions") : null,
       live.length ? null : h("p", { class: "muted pad" }, "No live sessions reported yet."),
@@ -789,11 +855,21 @@ function threadScreen(p) {
         h("div", { class: "bubble them" }, it.urgent ? h("span", { class: "chip urgent" }, "urgent") : null, it.body),
         h("span", { class: "meta" }, `${clock(it.ts)}${it.broadcast ? " · broadcast" : ""}`));
     }
-    const label = { sending: "sending…", sent: "sent, waiting for the Mac", delivered: "delivered", refused: "refused", failed: "failed" }[it.state] || it.state;
+    const label = { sending: "sending…", sent: "sent, waiting for the Mac", delivered: "delivered", refused: "refused", failed: "failed", stale: "not delivered", resent: "sent again below" }[it.state] || it.state;
+    const bad = it.state === "refused" || it.state === "failed" || it.state === "stale";
     return h("div", { class: "msg out" },
       h("div", { class: "bubble me" }, it.body),
-      h("span", { class: `meta ${it.state === "refused" || it.state === "failed" ? "bad" : ""}` },
-        `${clock(it.ts)} · ${label}${it.reason ? ` · ${it.reason}` : ""}`));
+      h("span", { class: `meta ${bad ? "bad" : ""}` },
+        `${clock(it.ts)} · ${label}${it.reason ? ` · ${it.reason}` : ""}`),
+      // The relay won't act on a message that waited too long in the
+      // mailbox; sending it again is a deliberate, fresh decision.
+      it.state === "stale" && canSend ? h("button", {
+        class: "inline", onclick: async () => {
+          it.state = "resent";
+          await db.putItem(it);
+          await send(p, task, it.body, it.reply_to);
+        },
+      }, "Send again") : null);
   };
 
   // One rounded field with the send button inside it, like Messages: the
@@ -838,7 +914,7 @@ function threadScreen(p) {
       : "This session isn't running on the Mac.");
 
   return h("main", { class: "threadview" },
-    bar(task, { back: () => go("sessions"), backCount: itemsCache.filter((it) => it.dir === "in" && !it.read && !(it.mac === p.mac_id && it.task === task)).length, sub: h("span", { class: session ? "status ok" : "status" }, `${macLabel(p)} · ${session ? "live" : "not running"}`) }),
+    bar(task, { back: goBack, backCount: itemsCache.filter((it) => it.dir === "in" && !it.read && !(it.mac === p.mac_id && it.task === task)).length, sub: h("span", { class: session ? "status ok" : "status" }, [macLabel(p), session ? "live" : "not running", session?.project].filter(Boolean).join(" · ")) }),
     h("div", { class: "thread" }, items.length ? items.map(bubble) : h("p", { class: "muted pad" }, "No messages yet.")),
     composer);
 }
@@ -851,7 +927,7 @@ function envLabel() {
 
 function settingsScreen() {
   return h("main", {},
-    bar("Settings", { back: () => go("sessions") }),
+    bar("Settings", { back: goBack }),
     h("p", { class: "muted pad" }, "Running on: ", envLabel(), ` · build ${BUILD}`),
     h("div", { class: "pad" }, h("button", {
       class: "link",

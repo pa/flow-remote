@@ -13,7 +13,7 @@ import (
 
 func TestDeferredStartsServingBeforeTheStore(t *testing.T) {
 	d := &Deferred{}
-	srv := httptest.NewServer((&Server{Store: d, Ready: d.Ready}).Handler())
+	srv := httptest.NewServer((&Server{Store: d, Ready: d.Ready, DebugErrors: true}).Handler())
 	defer srv.Close()
 	get := func(path string) (int, string) {
 		resp, err := http.Get(srv.URL + path)
@@ -60,5 +60,23 @@ func TestDeferredStartsServingBeforeTheStore(t *testing.T) {
 	}
 	if code, _ := get("/v1/envelopes"); code != http.StatusUnauthorized {
 		t.Fatalf("api after connect, unsigned: %d", code)
+	}
+}
+
+// Without DebugErrors the health check says only that the store isn't
+// ready, so strangers learn nothing about the database.
+func TestHealthHidesStoreErrors(t *testing.T) {
+	d := &Deferred{}
+	msg := "dial tcp 10.1.2.3:443: secret-host.firestore.goog refused"
+	d.lastErr.Store(&msg)
+	srv := httptest.NewServer((&Server{Store: d, Ready: d.Ready}).Handler())
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/v1/health")
+	var b strings.Builder
+	buf := make([]byte, 512)
+	n, _ := resp.Body.Read(buf)
+	b.Write(buf[:n])
+	if resp.StatusCode != http.StatusServiceUnavailable || strings.Contains(b.String(), "secret-host") {
+		t.Fatalf("health leaked: %d %s", resp.StatusCode, b.String())
 	}
 }

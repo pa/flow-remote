@@ -393,3 +393,75 @@ func TestIdleDeviceExpires(t *testing.T) {
 		t.Fatalf("re-sync revived an expired device: %d", code)
 	}
 }
+
+// Made-up key ids each cost a store read, so they spend from a small global
+// budget; known keys come from the cache and don't.
+func TestUnknownKeyFloodIsBudgeted(t *testing.T) {
+	r := newRig(t)
+	r.pair()
+	busy := 0
+	for i := 0; i < 60; i++ {
+		fake := &rig{t: t, srv: r.srv, clk: r.clk, sign: r.sign, deviceID: "dev-madeup" + envelope.NewID()[:6]}
+		if code, _ := fake.phone("GET", "/v1/envelopes", nil, true); code == http.StatusTooManyRequests {
+			busy++
+		}
+	}
+	if busy == 0 {
+		t.Fatal("60 made-up key ids in a burst were never throttled")
+	}
+	// The real phone's key is cached, so it still gets through.
+	if code, _ := r.phone("GET", "/v1/envelopes", nil, true); code != http.StatusOK {
+		t.Fatalf("known device during a flood: %d", code)
+	}
+}
+
+func TestPerMacCaps(t *testing.T) {
+	r := newRig(t)
+	r.pair()
+	ctx := context.Background()
+	// Ten phones at most per Mac (one is already paired).
+	var err error
+	for i := 0; i < 10 && err == nil; i++ {
+		k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		err = r.relay.PutDevice(ctx, identity.Device{ID: "dev-extra" + envelope.NewID()[:8], SignPub: envelope.EncodeSignPub(&k.PublicKey)})
+	}
+	if err == nil {
+		t.Fatal("an 11th phone was registered")
+	}
+	// A recipient who isn't collecting can't be buried in mail.
+	for i := 0; i < 500; i++ {
+		e := r.phoneEnvelope("x")
+		r.store.PutEnvelope(ctx, *e, r.clk.Now())
+	}
+	if code, body := r.phone("POST", "/v1/envelopes", r.phoneEnvelope("one more"), true); code != http.StatusTooManyRequests {
+		t.Fatalf("501st queued envelope: %d %s", code, body)
+	}
+}
+
+// Once every key is loaded, a made-up key id is refused without a store
+// lookup, and a known device is never throttled by someone else's flood.
+func TestWarmServerRefusesUnknownKeysWithoutTheStore(t *testing.T) {
+	store := mailbox.NewMemory()
+	clk := &clock{t: time.Now()}
+	s := &mailbox.Server{Store: store, SetupToken: setupToken, Now: clk.Now}
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+	mac, _ := identity.LoadOrCreateMac(&keystore.Memory{})
+	store.RegisterMac(context.Background(), mailbox.Mac{ID: mac.ID, SignPub: mac.SignPub(), Admin: true, Created: clk.Now()})
+	sign, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	store.PutDevice(context.Background(), mac.ID, "dev-known00000", envelope.EncodeSignPub(&sign.PublicKey))
+	if err := s.Warm(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	r := &rig{t: t, srv: srv, clk: clk, sign: sign}
+	for i := 0; i < 100; i++ {
+		r.deviceID = "dev-madeup" + envelope.NewID()[:6]
+		if code, _ := r.phone("GET", "/v1/envelopes", nil, true); code != http.StatusUnauthorized {
+			t.Fatalf("made-up key %d: %d", i, code)
+		}
+	}
+	r.deviceID = "dev-known00000"
+	if code, _ := r.phone("GET", "/v1/envelopes", nil, true); code != http.StatusOK {
+		t.Fatalf("known device after a flood: %d", code)
+	}
+}

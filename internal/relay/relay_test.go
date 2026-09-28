@@ -191,11 +191,11 @@ func byKind(ms []protocol.Msg, kind string) []protocol.Msg {
 
 func TestDeliverAndStatus(t *testing.T) {
 	r := newRig(t)
-	r.phoneSend(protocol.Msg{Kind: protocol.KindSend, ClientID: "c1", Task: "phone-dispatch", Body: "what's waiting on me?"}, r.now.Add(-2*time.Hour))
+	r.phoneSend(protocol.Msg{Kind: protocol.KindSend, ClientID: "c1", Task: "phone-dispatch", Body: "what's waiting on me?"}, r.now.Add(-5*time.Minute))
 	if poll := r.tick(); poll != mailbox.PollActive {
 		t.Fatalf("poll = %v", poll)
 	}
-	if len(r.flow.sent) != 1 || r.flow.sent[0] != "phone-dispatch|[phone · sent 2h 0m ago] what's waiting on me?|" {
+	if len(r.flow.sent) != 1 || r.flow.sent[0] != "phone-dispatch|[phone · sent 5m ago] what's waiting on me?|" {
 		t.Fatalf("flow got %q", r.flow.sent)
 	}
 	got := r.inbox()
@@ -340,6 +340,51 @@ func TestPicksUpPhonesPairedAfterStart(t *testing.T) {
 	r.tick()
 	if len(r.flow.sent) != 1 {
 		t.Fatalf("the relay ignored a phone paired after it started: %q\n%s", r.flow.sent, r.audit)
+	}
+}
+
+func TestStaleSendIsHeldForResend(t *testing.T) {
+	r := newRig(t)
+	r.phoneSend(protocol.Msg{Kind: protocol.KindSend, ClientID: "old", Task: "phone-dispatch", Body: "go ahead and push"}, r.now.Add(-3*time.Hour))
+	r.tick()
+	if len(r.flow.sent) != 0 {
+		t.Fatalf("a 3-hour-old command was delivered: %q", r.flow.sent)
+	}
+	st := byKind(r.inbox(), protocol.KindStatus)
+	if len(st) != 1 || st[0].State != protocol.Stale || !strings.Contains(st[0].Reason, "3h") {
+		t.Fatalf("status %+v", st)
+	}
+}
+
+func TestReplyToMustMatchForwardedMail(t *testing.T) {
+	r := newRig(t)
+	r.flow.unread = []flowcli.Mail{{ID: "abc123", Kind: "message", From: flowcli.Address{Assignee: "user", TaskSlug: "floci-local-apply"}, Body: "q?", CreatedAt: r.now}}
+	r.tick()
+	// Replying from another session, or to an id never forwarded, is refused.
+	r.phoneSend(protocol.Msg{Kind: protocol.KindSend, ClientID: "a", Task: "phone-dispatch", Body: "x", ReplyTo: "abc123"}, r.now)
+	r.phoneSend(protocol.Msg{Kind: protocol.KindSend, ClientID: "b", Task: "floci-local-apply", Body: "x", ReplyTo: "--urgent"}, r.now)
+	r.tick()
+	if len(r.flow.sent) != 0 || len(r.flow.read) != 0 {
+		t.Fatalf("mismatched reply_to reached flow: sent %q read %q", r.flow.sent, r.flow.read)
+	}
+}
+
+// hostileMailbox suggests whatever poll interval it likes.
+type hostileMailbox struct{ pollMS int64 }
+
+func (h hostileMailbox) List(context.Context) (client.Batch, error) {
+	return client.Batch{PollMS: h.pollMS}, nil
+}
+func (hostileMailbox) Post(context.Context, *envelope.Envelope) error { return nil }
+func (hostileMailbox) Ack(context.Context, []string) error            { return nil }
+
+func TestPollIntervalIsClamped(t *testing.T) {
+	r := newRig(t)
+	for ms, want := range map[int64]time.Duration{1: minPoll, 0: minPoll, 3000: 3 * time.Second, 86_400_000: maxPoll} {
+		r.relay.Mailbox = hostileMailbox{pollMS: ms}
+		if got := r.tick(); got != want {
+			t.Errorf("poll_ms=%d: waited %v, want %v", ms, got, want)
+		}
 	}
 }
 

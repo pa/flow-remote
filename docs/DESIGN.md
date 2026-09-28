@@ -106,9 +106,14 @@ Read from `docs/encryption.md`, `apps/cli/src/api/encryption.ts`,
 - **Pairing stays as it is.** Happier converged on the same QR + temporary
   key + HMAC secret flow, which is a useful check on ours. We already
   enforce the authenticated form; there's no legacy path to downgrade to.
-- **The web-origin weakness is real.** Happier's answer is native apps.
-  Ours, for now, is the Phase 2 Mac-side policy and Face ID approvals for
-  anything that writes.
+- **The web-origin weakness is real.** The mailbox serves the app's
+  JavaScript, so a hostile operator could ship code that uses a paired
+  phone's key while it's open. Happier's answer is native apps. Ours, for
+  now, is saying so plainly (README), refusing phone messages that waited
+  more than 10 minutes (so a held message can't be released later), and
+  later the Phase 2 Mac-side policy with Face ID approvals for anything that
+  writes. Serving the app from a separate origin the user controls would
+  also close most of it.
 
 What we're not borrowing: the shared account key. It makes multi-device
 sync easy, but it means a stolen phone holds the key to everything.

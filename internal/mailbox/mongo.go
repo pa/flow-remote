@@ -207,6 +207,13 @@ func (m *Mongo) ListEnvelopes(ctx context.Context, to string, limit int, now tim
 	return out, nil
 }
 
+func (m *Mongo) CountEnvelopes(ctx context.Context, to string, now time.Time) (int, error) {
+	n, err := retry(func() (int64, error) {
+		return m.envs.CountDocuments(ctx, bson.M{"to": to, "expires_at": bson.M{"$gt": now}})
+	})
+	return int(n), err
+}
+
 func (m *Mongo) Ack(ctx context.Context, to string, ids []string) error {
 	if len(ids) == 0 {
 		return nil

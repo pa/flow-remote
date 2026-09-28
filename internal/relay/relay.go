@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -26,6 +27,13 @@ import (
 )
 
 const (
+	minPoll = time.Second
+	maxPoll = 5 * time.Minute
+	// A phone message that waited longer than this isn't delivered; the phone
+	// is told and can send it again. A compromised mailbox could otherwise
+	// hold a "yes, go ahead" and release it at a moment of its choosing.
+	staleAfter = 10 * time.Minute
+
 	maxBody = 4000
 	// How often the session list is re-read from flow.
 	sessionsEvery = 15 * time.Second
@@ -105,16 +113,19 @@ func (r *Relay) Tick(ctx context.Context) (time.Duration, error) {
 	if err := r.forwardMail(ctx); err != nil {
 		r.log("mail", "err", err)
 	}
-	poll := time.Duration(batch.PollMS) * time.Millisecond
-	if poll <= 0 {
-		poll = time.Minute
-	}
+	// The mailbox suggests the interval, but it's untrusted: a hostile one
+	// could otherwise pin the Mac forking `flow` in a tight loop.
+	poll := min(max(time.Duration(batch.PollMS)*time.Millisecond, minPoll), maxPoll)
 	return poll, nil
 }
 
 // handle processes one envelope and reports whether to ack it. Envelopes
 // that fail checks are acked too, so junk doesn't come back every poll.
 func (r *Relay) handle(ctx context.Context, e envelope.Envelope, forceSessions *bool) bool {
+	if e.To != r.Mac.ID {
+		r.audit("drop", e.From, "", "addressed to another Mac")
+		return true
+	}
 	dev, ok := r.Devices.Active(e.From)
 	if !ok {
 		r.reloadDevices(reloadMin)
@@ -168,6 +179,16 @@ func (r *Relay) deliver(ctx context.Context, dev identity.Device, e envelope.Env
 	}
 	if m.Body == "" || utf8.RuneCountInString(m.Body) > maxBody {
 		return refuse(fmt.Sprintf("message must be 1-%d characters", maxBody))
+	}
+	if waited := r.now().Sub(time.UnixMilli(e.TS)); waited > staleAfter {
+		r.audit("stale", dev.ID, m.Task, age(waited))
+		return protocol.Msg{State: protocol.Stale, Reason: fmt.Sprintf("it waited %s while the Mac was away", strings.TrimPrefix(age(waited), "sent "))}
+	}
+	// A reply may only answer mail this relay forwarded from that session,
+	// so a phone can't mark other sessions' mail read or pass arbitrary
+	// text to flow's --reply-to.
+	if m.ReplyTo != "" && r.State.ForwardedFrom(m.ReplyTo) != m.Task {
+		return refuse("that reply doesn't match a message from this session")
 	}
 	tasks, err := r.Flow.LiveTasks(ctx)
 	if err != nil {
@@ -257,7 +278,7 @@ func (r *Relay) forwardMail(ctx context.Context) error {
 		if err := r.broadcast(ctx, msg); err != nil {
 			return err
 		}
-		if err := r.State.MarkForwarded(m.ID, r.now()); err != nil {
+		if err := r.State.MarkForwarded(m.ID, m.From.TaskSlug, r.now()); err != nil {
 			return err
 		}
 		r.audit("forward", "", m.From.TaskSlug, m.ID)
@@ -310,16 +331,22 @@ func (r *Relay) audit(action, device, task, detail string) {
 	r.Audit.Write(append(line, '\n'))
 }
 
-// State remembers which flow mail has gone to the phone, so the relay can
-// read the human's queue without acking it.
+// State remembers which flow mail has gone to the phone, and from which
+// session, so the relay can read the human's queue without acking it and
+// check that a reply answers a message it actually forwarded.
 type State struct {
 	mu        sync.Mutex
 	path      string
-	forwarded map[string]time.Time
+	forwarded map[string]forward
+}
+
+type forward struct {
+	At   time.Time `json:"at"`
+	Task string    `json:"task"`
 }
 
 func LoadState(path string) (*State, error) {
-	s := &State{path: path, forwarded: map[string]time.Time{}}
+	s := &State{path: path, forwarded: map[string]forward{}}
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
@@ -327,7 +354,18 @@ func LoadState(path string) (*State, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s, json.Unmarshal(b, &s.forwarded)
+	if err := json.Unmarshal(b, &s.forwarded); err == nil {
+		return s, nil
+	}
+	// Before the session was recorded, the file held id -> time.
+	var old map[string]time.Time
+	if err := json.Unmarshal(b, &old); err != nil {
+		return nil, err
+	}
+	for id, t := range old {
+		s.forwarded[id] = forward{At: t}
+	}
+	return s, nil
 }
 
 func (s *State) Forwarded(id string) bool {
@@ -337,12 +375,19 @@ func (s *State) Forwarded(id string) bool {
 	return ok
 }
 
-func (s *State) MarkForwarded(id string, now time.Time) error {
+// ForwardedFrom returns the session a forwarded message came from, or "".
+func (s *State) ForwardedFrom(id string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.forwarded[id] = now
-	for k, t := range s.forwarded {
-		if now.Sub(t) > 2*mailHorizon {
+	return s.forwarded[id].Task
+}
+
+func (s *State) MarkForwarded(id, task string, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.forwarded[id] = forward{At: now, Task: task}
+	for k, f := range s.forwarded {
+		if now.Sub(f.At) > 2*mailHorizon {
 			delete(s.forwarded, k)
 		}
 	}

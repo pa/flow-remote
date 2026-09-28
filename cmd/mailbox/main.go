@@ -13,6 +13,7 @@
 //	                      Firestore's MongoDB mode only accepts its own
 //	                      database id there)
 //	MAILBOX_DEVICE_IDLE_DAYS  expire phone keys unused this long (default 30, 0 = never)
+//	MAILBOX_DEBUG_ERRORS=1    return store errors to callers (default: a reference)
 //	MAILBOX_WEB_DIR       also serve the phone app from this directory.
 //	                      Firebase Hosting only forwards to Cloud Run, so
 //	                      on GCP the image bakes the app in at /web.
@@ -61,7 +62,6 @@ func run(log *slog.Logger) error {
 	// doesn't listen on $PORT within its startup window, so a slow or
 	// failing first database connection must not stop the server starting.
 	store := &mailbox.Deferred{}
-	go store.Connect(ctx, openStore, func(err error) { log.Warn("store connect", "err", err) })
 	idle := 30
 	if v := os.Getenv("MAILBOX_DEVICE_IDLE_DAYS"); v != "" {
 		n, err := strconv.Atoi(v)
@@ -71,7 +71,20 @@ func run(log *slog.Logger) error {
 		idle = n
 	}
 	s := &mailbox.Server{Store: store, Ready: store.Ready, SetupToken: os.Getenv("MAILBOX_SETUP_TOKEN"), Log: log,
-		DeviceIdle: time.Duration(idle) * 24 * time.Hour}
+		DeviceIdle: time.Duration(idle) * 24 * time.Hour, DebugErrors: os.Getenv("MAILBOX_DEBUG_ERRORS") == "1"}
+	go func() {
+		store.Connect(ctx, openStore, func(err error) { log.Warn("store connect", "err", err) })
+		// Load every key, so made-up key ids cost no database work.
+		for ctx.Err() == nil {
+			err := s.Warm(ctx)
+			if err == nil {
+				log.Info("keys loaded")
+				return
+			}
+			log.Warn("warm", "err", err)
+			time.Sleep(5 * time.Second)
+		}
+	}()
 	if s.SetupToken != "" && len(s.SetupToken) < 24 {
 		return errors.New("MAILBOX_SETUP_TOKEN must be at least 24 characters")
 	}
@@ -84,7 +97,10 @@ func run(log *slog.Logger) error {
 	if dir := os.Getenv("MAILBOX_WEB_DIR"); dir != "" {
 		handler = withApp(handler, dir)
 	}
-	srv := &http.Server{Addr: "0.0.0.0:" + port, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	// Timeouts so slow clients can't hold the single instance's connections.
+	srv := &http.Server{Addr: "0.0.0.0:" + port, Handler: handler,
+		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
+		WriteTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute}
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

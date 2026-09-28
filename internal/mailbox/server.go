@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pa/flow-remote/internal/envelope"
@@ -29,8 +30,12 @@ const (
 	PollIdle     = 60 * time.Second
 	ActiveWindow = 10 * time.Minute
 
-	phonePerHour = 30  // from the plan's threat model
-	relayPerHour = 600 // caps a runaway session, well above normal use
+	phonePerHour  = 30  // from the plan's threat model
+	tenantPerHour = 120 // all of one Mac's phones together
+	relayPerHour  = 600 // caps a runaway session, well above normal use
+	pairsPerHour  = 30
+	devicesPerMac = 10
+	maxQueued     = 500 // envelopes waiting for one recipient
 
 	// Expired data is deleted in passing, at most this often. Relays call
 	// in at least once a minute, so no scheduled job is needed.
@@ -58,6 +63,9 @@ type Server struct {
 	// Like Remote Control's trusted devices and Tailscale's node keys, a
 	// forgotten phone then stops working on its own.
 	DeviceIdle time.Duration
+	// DebugErrors returns store errors to callers instead of a reference.
+	// For diagnosing a deployment whose logs you can't read; off otherwise.
+	DebugErrors bool
 	// Ready, if set, gates the API: until it returns nil every call gets
 	// 503, and /v1/health says why.
 	Ready func() error
@@ -65,6 +73,10 @@ type Server struct {
 	Log   *slog.Logger
 
 	limits      limiter
+	keys        keyCache
+	miss        bucket
+	perIP       ipLimiter
+	warm        atomic.Bool // every key is in s.keys
 	cleanupMu   sync.Mutex
 	lastCleanup time.Time
 }
@@ -82,7 +94,13 @@ func (s *Server) Handler() http.Handler {
 	// Run the request never reaches the container.
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, _ *http.Request) {
 		if err := s.ready(); err != nil {
-			s.fail(w, http.StatusServiceUnavailable, "store not ready: "+err.Error())
+			msg := "store not ready"
+			if s.DebugErrors {
+				msg += ": " + err.Error()
+			} else if s.Log != nil {
+				s.Log.Warn("health", "err", err)
+			}
+			s.fail(w, http.StatusServiceUnavailable, msg)
 			return
 		}
 		w.Write([]byte("ok"))
@@ -114,6 +132,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/relay/tenants/{id}/remove", s.admin(s.removeTenant))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.perIP.allow(clientIP(r), s.now()) {
+			s.fail(w, http.StatusTooManyRequests, "too many requests from this address")
+			return
+		}
 		if r.URL.Path != "/v1/health" && s.ready() != nil {
 			s.fail(w, http.StatusServiceUnavailable, "the mailbox is starting; try again shortly")
 			return
@@ -144,17 +166,23 @@ func (s *Server) device(h handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 		var dev Device
+		var lookupErr error
 		id, err := reqsig.Verify(r, func(id string) (*ecdsa.PublicKey, error) {
 			if !strings.HasPrefix(id, "dev-") {
 				return nil, reqsig.ErrUnsigned
 			}
-			d, err := s.Store.GetDevice(r.Context(), id)
+			d, err := s.lookupDevice(r.Context(), id)
 			if err != nil {
+				lookupErr = err
 				return nil, err
 			}
 			dev = d
 			return envelope.ParseSignPub(d.SignPub)
 		}, s.now())
+		if errors.Is(lookupErr, errBusy) {
+			s.fail(w, http.StatusTooManyRequests, "the mailbox is busy; try again shortly")
+			return
+		}
 		if err != nil {
 			s.fail(w, http.StatusUnauthorized, "unsigned, or signed by an unknown or revoked device")
 			return
@@ -174,17 +202,23 @@ func (s *Server) mac(h handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 		var mac Mac
+		var lookupErr error
 		id, err := reqsig.Verify(r, func(id string) (*ecdsa.PublicKey, error) {
 			if !strings.HasPrefix(id, "mac-") {
 				return nil, reqsig.ErrUnsigned
 			}
-			m, err := s.Store.GetMac(r.Context(), id)
+			m, err := s.lookupMac(r.Context(), id)
 			if err != nil {
+				lookupErr = err
 				return nil, err
 			}
 			mac = m
 			return envelope.ParseSignPub(m.SignPub)
 		}, s.now())
+		if errors.Is(lookupErr, errBusy) {
+			s.fail(w, http.StatusTooManyRequests, "the mailbox is busy; try again shortly")
+			return
+		}
 		if err != nil {
 			s.fail(w, http.StatusUnauthorized, "unsigned, or signed by an unknown Mac")
 			return
@@ -257,6 +291,12 @@ func (s *Server) registerMac(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	// Anyone can make a self-signed registration, so it spends from the
+	// global budget before it touches the store.
+	if !s.spendMiss() {
+		s.fail(w, http.StatusTooManyRequests, "the mailbox is busy; try again shortly")
+		return
+	}
 	// A Mac that's already registered with this key needs nothing more:
 	// the signature just proved it holds the key.
 	if cur, err := s.Store.GetMac(ctx, req.MacID); err == nil {
@@ -285,10 +325,14 @@ func (s *Server) registerMac(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	err = s.Store.RegisterMac(ctx, Mac{ID: req.MacID, SignPub: req.SignPub, Admin: admin, Created: s.now()})
+	mac := Mac{ID: req.MacID, SignPub: req.SignPub, Admin: admin, Created: s.now()}
+	err = s.Store.RegisterMac(ctx, mac)
 	if err != nil && !errors.Is(err, ErrExists) {
 		s.storeErr(w, err)
 		return
+	}
+	if m, err := s.Store.GetMac(ctx, req.MacID); err == nil {
+		s.keys.put("mac:"+req.MacID, cacheEntry{mac: m, expires: s.now().Add(keyCacheTTL)})
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -302,6 +346,10 @@ func (s *Server) postPair(w http.ResponseWriter, r *http.Request) {
 	}
 	if !strings.HasPrefix(e.From, "dev-") || !strings.HasPrefix(e.To, "mac-") {
 		s.fail(w, http.StatusBadRequest, "bad pairing envelope")
+		return
+	}
+	if !s.spendMiss() {
+		s.fail(w, http.StatusTooManyRequests, "the mailbox is busy; try again shortly")
 		return
 	}
 	if err := s.Store.PutPair(r.Context(), r.PathValue("pair"), e, s.now()); err != nil {
@@ -326,6 +374,14 @@ func (s *Server) phonePost(w http.ResponseWriter, r *http.Request, c caller) {
 	}
 	if !s.limits.allow(c.ID, phonePerHour, s.now()) {
 		s.fail(w, http.StatusTooManyRequests, "limit is 30 messages an hour per device")
+		return
+	}
+	// Per tenant too, so extra phones don't multiply the limit.
+	if !s.limits.allow("tenant:"+c.Mac, tenantPerHour, s.now()) {
+		s.fail(w, http.StatusTooManyRequests, "this Mac's phones hit their hourly limit")
+		return
+	}
+	if !s.roomFor(w, r.Context(), c.Mac) {
 		return
 	}
 	s.put(w, r.Context(), e)
@@ -368,6 +424,10 @@ func (s *Server) openPair(w http.ResponseWriter, r *http.Request, c caller) {
 		s.fail(w, http.StatusBadRequest, "pair id too short")
 		return
 	}
+	if !s.limits.allow("pairs:"+c.Mac, pairsPerHour, s.now()) {
+		s.fail(w, http.StatusTooManyRequests, "too many pairings this hour")
+		return
+	}
 	if err := s.Store.OpenPair(r.Context(), req.PairID, c.Mac, s.now()); err != nil {
 		s.storeErr(w, err)
 		return
@@ -400,9 +460,19 @@ func (s *Server) putDevice(w http.ResponseWriter, r *http.Request, c caller) {
 		s.fail(w, http.StatusBadRequest, "bad device key")
 		return
 	}
+	if d, err := s.Store.GetDevice(r.Context(), req.DeviceID); err != nil || d.Owner != c.Mac {
+		// A new device for this Mac: check the cap.
+		if ids, err := s.Store.ListDevices(r.Context(), c.Mac); err == nil && len(ids) >= devicesPerMac {
+			s.fail(w, http.StatusConflict, "this Mac already has the most phones allowed; revoke one first")
+			return
+		}
+	}
 	if err := s.Store.PutDevice(r.Context(), c.Mac, req.DeviceID, req.SignPub); err != nil {
 		s.storeErr(w, err)
 		return
+	}
+	if d, err := s.Store.GetDevice(r.Context(), req.DeviceID); err == nil {
+		s.keys.put("dev:"+req.DeviceID, cacheEntry{dev: d, expires: s.now().Add(keyCacheTTL)})
 	}
 	// Enrollment counts as use, so the idle clock starts now. Only for a
 	// device never seen, so a re-sync on relay start can't revive an
@@ -433,6 +503,7 @@ func (s *Server) revokeDevice(w http.ResponseWriter, r *http.Request, c caller) 
 		s.storeErr(w, err)
 		return
 	}
+	s.keys.drop("dev:" + r.PathValue("id"))
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -460,6 +531,9 @@ func (s *Server) relayPost(w http.ResponseWriter, r *http.Request, c caller) {
 	}
 	if !s.limits.allow(c.Mac, relayPerHour, s.now()) {
 		s.fail(w, http.StatusTooManyRequests, "relay send limit reached")
+		return
+	}
+	if !s.roomFor(w, r.Context(), e.To) {
 		return
 	}
 	s.put(w, r.Context(), e)
@@ -510,14 +584,36 @@ func (s *Server) removeTenant(w http.ResponseWriter, r *http.Request, c caller) 
 		s.fail(w, http.StatusBadRequest, "a Mac can't remove itself")
 		return
 	}
+	devs, _ := s.Store.ListDevices(r.Context(), id)
 	if err := s.Store.RemoveMac(r.Context(), id); err != nil {
 		s.storeErr(w, err)
 		return
+	}
+	s.keys.drop("mac:" + id)
+	for _, d := range devs {
+		s.keys.drop("dev:" + d)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // ---- shared ----
+
+var errBusy = errors.New("mailbox: busy")
+
+// roomFor refuses a new envelope when too many are already waiting for to,
+// so no one can fill the store for a recipient who isn't collecting.
+func (s *Server) roomFor(w http.ResponseWriter, ctx context.Context, to string) bool {
+	n, err := s.Store.CountEnvelopes(ctx, to, s.now())
+	if err != nil {
+		s.storeErr(w, err)
+		return false
+	}
+	if n >= maxQueued {
+		s.fail(w, http.StatusTooManyRequests, "too many messages waiting for that recipient")
+		return false
+	}
+	return true
+}
 
 func (s *Server) maybeCleanup(ctx context.Context) {
 	s.cleanupMu.Lock()
@@ -595,14 +691,21 @@ func (s *Server) storeErr(w http.ResponseWriter, err error) {
 		s.fail(w, http.StatusNotFound, "not found")
 	case errors.Is(err, ErrUnavailable):
 		s.fail(w, http.StatusServiceUnavailable, "the mailbox is starting; try again shortly")
+	case errors.Is(err, errBusy):
+		s.fail(w, http.StatusTooManyRequests, "the mailbox is busy; try again shortly")
 	default:
 		if s.Log != nil {
 			s.Log.Error("store", "err", err)
 		}
-		// Callers that reach here have proved who they are (setup token,
-		// Mac key or device key), and without the detail a store failure
-		// on Cloud Run is undiagnosable from outside.
-		s.fail(w, http.StatusInternalServerError, "store error: "+err.Error())
+		ref := envelope.NewID()[:8]
+		if s.Log != nil {
+			s.Log.Error("store", "err", err, "ref", ref)
+		}
+		msg := "store error (ref " + ref + ")"
+		if s.DebugErrors {
+			msg += ": " + err.Error()
+		}
+		s.fail(w, http.StatusInternalServerError, msg)
 	}
 }
 

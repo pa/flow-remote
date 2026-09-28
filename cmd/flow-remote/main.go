@@ -500,7 +500,8 @@ On the other Mac, after installing flow-remote:
   FLOW_REMOTE_INVITE=%s flow-remote setup --mailbox %s
 
 The invite adds that Mac as its own tenant. It can't see or reach this
-Mac's sessions or phones, and this Mac can't reach its.
+Mac's sessions or phones, and this Mac can't reach its. Both of you still
+trust whoever runs this mailbox: it serves the phone app's code.
 `, exp.Local().Format(time.RFC1123), code, code, c.BaseURL)
 	return nil
 }

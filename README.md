@@ -2,7 +2,7 @@
 
 Message your [flow](https://github.com/Facets-cloud/flow) sessions from your
 phone, and get their replies back, through a mailbox that can't read or
-forge anything.
+forge messages in transit.
 
 ```
  phone (web app)            mailbox (any host)              your Mac
@@ -21,6 +21,14 @@ forge anything.
   people's, are separate.
 - **Per-device revocation.** `flow-remote revoke` cuts off one phone. Its
   key signs nothing afterwards.
+
+**What you still trust the mailbox for.** The mailbox also serves the phone
+app's code. Whoever runs it (you, if you deploy your own) could ship a
+modified app that uses a paired phone's key while it's open, and so send
+messages as that phone. It still can't read messages already sent, or
+impersonate your Mac. Run your own mailbox, or only join one run by
+someone you trust. On a shared mailbox, invited Macs are isolated from
+each other but not from its operator.
 
 Details: [docs/DESIGN.md](docs/DESIGN.md) covers the architecture,
 decisions and prior art, and [docs/PROTOCOL.md](docs/PROTOCOL.md) the byte
@@ -52,7 +60,9 @@ FLOW_REMOTE_SETUP_TOKEN=<token> flow-remote setup --mailbox https://flow.example
 ```
 
 Keys go in the login Keychain (service `flow-remote`). Settings and logs
-go in `~/.flow-remote/`.
+go in `~/.flow-remote/`. The Keychain items are readable by other programs
+you run, so this protects the keys about as well as file permissions do.
+It doesn't isolate them from your own user.
 
 ## 3. Start the relay
 
@@ -113,6 +123,20 @@ and its mail.
 
 Once your first Mac is set up, clear `MAILBOX_SETUP_TOKEN` on the mailbox.
 Invites cover everything after that.
+
+## If you lose a phone
+
+On the Mac it's paired with, list its phones and revoke the lost one:
+
+```bash
+flow-remote devices
+flow-remote revoke <device-id>
+```
+
+The mailbox and the relay both refuse that key from then on. A phone
+that's gone unused for `MAILBOX_DEVICE_IDLE_DAYS` (default 30) stops
+working anyway. A phone that's revoked or expired comes back with **Pair
+again**, which gives it a new key.
 
 ## Commands
 

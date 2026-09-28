@@ -21,6 +21,7 @@ const (
 	Delivered = "delivered"
 	Refused   = "refused"
 	Failed    = "failed"
+	Stale     = "stale" // waited too long in the mailbox; send it again
 )
 
 // Msg is every plaintext. Fields not used by a kind stay empty.

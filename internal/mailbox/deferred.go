@@ -82,6 +82,14 @@ func (d *Deferred) ListEnvelopes(ctx context.Context, to string, limit int, now 
 	return s.ListEnvelopes(ctx, to, limit, now)
 }
 
+func (d *Deferred) CountEnvelopes(ctx context.Context, to string, now time.Time) (int, error) {
+	s, err := d.get()
+	if err != nil {
+		return 0, err
+	}
+	return s.CountEnvelopes(ctx, to, now)
+}
+
 func (d *Deferred) Ack(ctx context.Context, to string, ids []string) error {
 	s, err := d.get()
 	if err != nil {

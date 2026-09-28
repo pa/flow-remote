@@ -59,6 +59,8 @@ type Store interface {
 	ListEnvelopes(ctx context.Context, to string, limit int, now time.Time) ([]Record, error)
 	// Ack deletes envelopes for to by id. Ids for someone else are ignored.
 	Ack(ctx context.Context, to string, ids []string) error
+	// CountEnvelopes is how many unexpired envelopes wait for to.
+	CountEnvelopes(ctx context.Context, to string, now time.Time) (int, error)
 
 	// OpenPair makes a slot, owned by macID, that a phone may post one
 	// enrollment into.
@@ -155,6 +157,18 @@ func (m *Memory) ListEnvelopes(_ context.Context, to string, limit int, now time
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+func (m *Memory) CountEnvelopes(_ context.Context, to string, now time.Time) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, r := range m.envs {
+		if r.To == to && now.Before(r.ExpiresAt) {
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (m *Memory) Ack(_ context.Context, to string, ids []string) error {
