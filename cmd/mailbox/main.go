@@ -10,6 +10,8 @@
 //	FIREBASE_TENANT_ID    Identity Platform tenant, if the app has one
 //	MAILBOX_STORE         "memory" (default) or "mongo"
 //	MAILBOX_DEV_AUTH=1    accept "Bearer dev:<email>" (local only)
+//	MAILBOX_WEB_DIR       also serve the phone app from this directory
+//	                      (local only; on GCP, Firebase Hosting serves it)
 package main
 
 import (
@@ -70,7 +72,19 @@ func run(log *slog.Logger) error {
 	if port == "" {
 		port = "8080"
 	}
-	srv := &http.Server{Addr: "0.0.0.0:" + port, Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	handler := s.Handler()
+	if dir := os.Getenv("MAILBOX_WEB_DIR"); dir != "" {
+		if os.Getenv("K_SERVICE") != "" {
+			return errors.New("MAILBOX_WEB_DIR is for local runs; Firebase Hosting serves the app on GCP")
+		}
+		api := handler
+		mux := http.NewServeMux()
+		mux.Handle("/v1/", api)
+		mux.Handle("/healthz", api)
+		mux.Handle("/", http.FileServer(http.Dir(dir)))
+		handler = mux
+	}
+	srv := &http.Server{Addr: "0.0.0.0:" + port, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

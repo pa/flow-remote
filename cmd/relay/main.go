@@ -140,7 +140,7 @@ func pair(ctx context.Context) error {
 	}
 	mb := &client.Client{BaseURL: cfg.Mailbox, Mac: mac}
 
-	offer := pairing.NewOffer(mac, cfg.Mailbox, time.Now())
+	offer := pairing.NewOffer(mac, "", time.Now()) // the phone uses its own origin
 	link := offer.Link(cfg.App)
 	code, err := qr.Encode(link, qr.L)
 	if err != nil {

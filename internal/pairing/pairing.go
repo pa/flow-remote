@@ -50,8 +50,8 @@ type Offer struct {
 	MacBoxPub  string `json:"mac_box_pub"`
 	PairID     string `json:"pair_id"`
 	Secret     string `json:"secret"`
-	Expires    int64  `json:"exp"` // unix ms
-	Mailbox    string `json:"mailbox"`
+	Expires    int64  `json:"exp"`               // unix ms
+	Mailbox    string `json:"mailbox,omitempty"` // "" means the app's own origin
 }
 
 func NewOffer(mac *identity.Mac, mailbox string, now time.Time) Offer {
