@@ -82,7 +82,8 @@ html.in-thread, html.in-thread body { overflow: hidden; height: 100%; overscroll
 }
 .threadview .bar { position: static; }
 .thread { overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
-html.kb-open .composer { padding-bottom: 8px; }
+/* With the keyboard up there's no home indicator to clear. */
+html.kb-open .composer { padding-bottom: 6px; }
 .thread { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; padding: 12px; }
 .msg { display: flex; flex-direction: column; gap: 2px; margin-bottom: 6px; }
 .msg.out { align-items: flex-end; }
@@ -92,9 +93,13 @@ html.kb-open .composer { padding-bottom: 8px; }
 .them { background: var(--surface); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
 .meta { font-size: 11px; color: var(--muted); }
 .meta.bad { color: var(--bad); }
-.composer { border-top: 1px solid var(--line); padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); background: var(--bg); display: flex; flex-direction: column; gap: 6px; }
-.composer .row2 { display: flex; gap: 8px; align-items: flex-end; }
-.composer textarea { resize: none; }
+.composer { padding: 6px 10px calc(6px + env(safe-area-inset-bottom)); background: var(--bg); display: flex; flex-direction: column; gap: 6px; }
+/* Messages-style field: the send button lives inside the pill. */
+.pill { display: flex; align-items: flex-end; gap: 4px; background: var(--field); border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 20px; padding: 3px 3px 3px 12px; }
+.pill textarea { flex: 1; resize: none; border: 0; background: none; padding: 6px 0; min-height: 22px; max-height: 132px; line-height: 20px; font-size: 16px; outline: none; border-radius: 0; }
+.send { width: 30px; height: 30px; border-radius: 50%; background: var(--accent); color: #fff; display: grid; place-items: center; flex: none; }
+.send svg { width: 17px; height: 17px; }
+.send[hidden] { display: none; }
 .replying { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
 .replying span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .photo { display: block; }

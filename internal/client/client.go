@@ -160,6 +160,23 @@ func (c *Client) PutDevice(ctx context.Context, dev identity.Device) error {
 	return c.do(ctx, "POST", "/v1/relay/devices", map[string]string{"device_id": dev.ID, "sign_pub": dev.SignPub}, true, nil)
 }
 
+// DeviceStatus is the mailbox's view of one of this Mac's phones.
+type DeviceStatus struct {
+	ID       string     `json:"id"`
+	LastSeen *time.Time `json:"last_seen"`
+	Expired  bool       `json:"expired"`
+}
+
+// Devices lists this Mac's active phones with when each last checked in.
+func (c *Client) Devices(ctx context.Context) ([]DeviceStatus, int, error) {
+	var out struct {
+		Devices  []DeviceStatus `json:"devices"`
+		IdleDays int            `json:"idle_days"`
+	}
+	err := c.do(ctx, "GET", "/v1/relay/devices", nil, true, &out)
+	return out.Devices, out.IdleDays, err
+}
+
 func (c *Client) RevokeDevice(ctx context.Context, deviceID string) error {
 	return c.do(ctx, "POST", "/v1/relay/devices/"+deviceID+"/revoke", nil, true, nil)
 }

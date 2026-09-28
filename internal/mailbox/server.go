@@ -54,6 +54,10 @@ type Server struct {
 	// SetupToken registers the first (admin) Mac. Clear it once that's
 	// done; invites cover every Mac after that. Empty disables it.
 	SetupToken string
+	// DeviceIdle expires a phone key unused for this long; 0 never does.
+	// Like Remote Control's trusted devices and Tailscale's node keys, a
+	// forgotten phone then stops working on its own.
+	DeviceIdle time.Duration
 	// Ready, if set, gates the API: until it returns nil every call gets
 	// 503, and /v1/health says why.
 	Ready func() error
@@ -99,6 +103,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/relay/pairs/{pair}", s.mac(s.takePair))
 	mux.HandleFunc("POST /v1/relay/devices", s.mac(s.putDevice))
 	mux.HandleFunc("POST /v1/relay/devices/{id}/revoke", s.mac(s.revokeDevice))
+	mux.HandleFunc("GET /v1/relay/devices", s.mac(s.listDevices))
 	mux.HandleFunc("GET /v1/relay/envelopes", s.mac(s.relayList))
 	mux.HandleFunc("POST /v1/relay/envelopes", s.mac(s.relayPost))
 	mux.HandleFunc("POST /v1/relay/ack", s.mac(s.relayAck))
@@ -154,6 +159,11 @@ func (s *Server) device(h handler) http.HandlerFunc {
 			s.fail(w, http.StatusUnauthorized, "unsigned, or signed by an unknown or revoked device")
 			return
 		}
+		if s.expired(r.Context(), id) {
+			s.fail(w, http.StatusUnauthorized, "this device's key expired after going unused; pair again")
+			return
+		}
+		s.Store.Touch(r.Context(), "dev:"+id, s.now())
 		s.Store.Touch(r.Context(), "phone:"+dev.Owner, s.now())
 		s.maybeCleanup(r.Context())
 		h(w, r, caller{ID: id, Mac: dev.Owner})
@@ -183,6 +193,17 @@ func (s *Server) mac(h handler) http.HandlerFunc {
 		s.maybeCleanup(r.Context())
 		h(w, r, caller{ID: id, Mac: id, Admin: mac.Admin})
 	}
+}
+
+// expired reports whether a device has gone unused past DeviceIdle. A
+// device with no recorded use yet (registered before this existed) isn't
+// expired; its first request starts the clock.
+func (s *Server) expired(ctx context.Context, deviceID string) bool {
+	if s.DeviceIdle <= 0 {
+		return false
+	}
+	last, err := s.Store.LastSeen(ctx, "dev:"+deviceID)
+	return err == nil && !last.IsZero() && s.now().Sub(last) > s.DeviceIdle
 }
 
 func (s *Server) admin(h handler) http.HandlerFunc {
@@ -383,7 +404,28 @@ func (s *Server) putDevice(w http.ResponseWriter, r *http.Request, c caller) {
 		s.storeErr(w, err)
 		return
 	}
+	// Enrollment counts as use, so the idle clock starts now. Only for a
+	// device never seen, so a re-sync on relay start can't revive an
+	// expired one.
+	if t, _ := s.Store.LastSeen(r.Context(), "dev:"+req.DeviceID); t.IsZero() {
+		s.Store.Touch(r.Context(), "dev:"+req.DeviceID, s.now())
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// listDevices reports a Mac's phones with when each last checked in.
+func (s *Server) listDevices(w http.ResponseWriter, r *http.Request, c caller) {
+	ids, err := s.Store.ListDevices(r.Context(), c.Mac)
+	if err != nil {
+		s.storeErr(w, err)
+		return
+	}
+	out := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		t, _ := s.Store.LastSeen(r.Context(), "dev:"+id)
+		out = append(out, map[string]any{"id": id, "last_seen": nullTime(t), "expired": s.expired(r.Context(), id)})
+	}
+	s.json(w, http.StatusOK, map[string]any{"devices": out, "idle_days": int(s.DeviceIdle.Hours() / 24)})
 }
 
 func (s *Server) revokeDevice(w http.ResponseWriter, r *http.Request, c caller) {
@@ -412,8 +454,8 @@ func (s *Server) relayPost(w http.ResponseWriter, r *http.Request, c caller) {
 		return
 	}
 	// Only to its own phones: a Mac can't drop mail into another tenant's.
-	if d, err := s.Store.GetDevice(r.Context(), e.To); err != nil || d.Owner != c.Mac {
-		s.fail(w, http.StatusNotFound, "no such device on this Mac")
+	if d, err := s.Store.GetDevice(r.Context(), e.To); err != nil || d.Owner != c.Mac || s.expired(r.Context(), e.To) {
+		s.fail(w, http.StatusNotFound, "no such device on this Mac, or its key expired")
 		return
 	}
 	if !s.limits.allow(c.Mac, relayPerHour, s.now()) {

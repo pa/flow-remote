@@ -56,7 +56,7 @@ type rig struct {
 func newRig(t *testing.T) *rig {
 	clk := &clock{t: time.Now()}
 	store := mailbox.NewMemory()
-	s := &mailbox.Server{Store: store, SetupToken: setupToken, Now: clk.Now}
+	s := &mailbox.Server{Store: store, SetupToken: setupToken, Now: clk.Now, DeviceIdle: 30 * 24 * time.Hour}
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 	mac, _ := identity.LoadOrCreateMac(&keystore.Memory{})
@@ -350,5 +350,46 @@ func TestExpiryCleansUpInPassing(t *testing.T) {
 	}
 	if n, _ := r.store.DeleteExpired(context.Background(), r.clk.Now()); n != 0 {
 		t.Fatalf("%d expired envelopes left behind by in-passing cleanup", n)
+	}
+}
+
+func TestIdleDeviceExpires(t *testing.T) {
+	r := newRig(t)
+	r.pair()
+	ctx := context.Background()
+
+	list, idle, err := r.relay.Devices(ctx)
+	if err != nil || idle != 30 || len(list) != 1 || list[0].ID != r.deviceID || list[0].LastSeen == nil || list[0].Expired {
+		t.Fatalf("devices right after pairing: %+v idle=%d %v", list, idle, err)
+	}
+
+	// Used within the window: still fine, and the clock restarts.
+	r.clk.Add(29 * 24 * time.Hour)
+	if code, _ := r.phone("GET", "/v1/envelopes", nil, true); code != http.StatusOK {
+		t.Fatalf("after 29 days: %d", code)
+	}
+	r.clk.Add(29 * 24 * time.Hour)
+	if code, _ := r.phone("GET", "/v1/envelopes", nil, true); code != http.StatusOK {
+		t.Fatalf("29 days after last use: %d", code)
+	}
+
+	// Unused past the window: refused, and the relay can't queue for it.
+	r.clk.Add(31 * 24 * time.Hour)
+	reply, _ := envelope.Seal([]byte("x"), r.mac.Sign, r.mac.ID, r.deviceID, r.box.PublicKey(), r.clk.Now().UnixMilli())
+	if err := r.relay.Post(ctx, reply); err == nil {
+		t.Error("relay queued mail for an expired device")
+	}
+	if list, _, _ := r.relay.Devices(ctx); len(list) != 1 || !list[0].Expired {
+		t.Errorf("devices after expiry: %+v", list)
+	}
+	code, body := r.phone("GET", "/v1/envelopes", nil, true)
+	if code != http.StatusUnauthorized || !bytes.Contains(body, []byte("expired")) {
+		t.Fatalf("expired device: %d %s", code, body)
+	}
+	// A relay re-sync (PutDevice on start) must not revive it.
+	dev := identity.Device{ID: r.deviceID, SignPub: envelope.EncodeSignPub(&r.sign.PublicKey)}
+	r.relay.PutDevice(ctx, dev)
+	if code, _ := r.phone("GET", "/v1/envelopes", nil, true); code != http.StatusUnauthorized {
+		t.Fatalf("re-sync revived an expired device: %d", code)
 	}
 }

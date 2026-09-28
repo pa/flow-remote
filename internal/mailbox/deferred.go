@@ -186,6 +186,14 @@ func (d *Deferred) GetDevice(ctx context.Context, deviceID string) (Device, erro
 	return s.GetDevice(ctx, deviceID)
 }
 
+func (d *Deferred) ListDevices(ctx context.Context, owner string) ([]string, error) {
+	s, err := d.get()
+	if err != nil {
+		return nil, err
+	}
+	return s.ListDevices(ctx, owner)
+}
+
 func (d *Deferred) Touch(ctx context.Context, who string, now time.Time) error {
 	s, err := d.get()
 	if err != nil {

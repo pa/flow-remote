@@ -12,6 +12,7 @@
 //	MAILBOX_MONGO_DB      database name (default: the one in the URI's path;
 //	                      Firestore's MongoDB mode only accepts its own
 //	                      database id there)
+//	MAILBOX_DEVICE_IDLE_DAYS  expire phone keys unused this long (default 30, 0 = never)
 //	MAILBOX_WEB_DIR       also serve the phone app from this directory.
 //	                      Firebase Hosting only forwards to Cloud Run, so
 //	                      on GCP the image bakes the app in at /web.
@@ -25,6 +26,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -60,7 +62,16 @@ func run(log *slog.Logger) error {
 	// failing first database connection must not stop the server starting.
 	store := &mailbox.Deferred{}
 	go store.Connect(ctx, openStore, func(err error) { log.Warn("store connect", "err", err) })
-	s := &mailbox.Server{Store: store, Ready: store.Ready, SetupToken: os.Getenv("MAILBOX_SETUP_TOKEN"), Log: log}
+	idle := 30
+	if v := os.Getenv("MAILBOX_DEVICE_IDLE_DAYS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return fmt.Errorf("MAILBOX_DEVICE_IDLE_DAYS=%q: want a number of days", v)
+		}
+		idle = n
+	}
+	s := &mailbox.Server{Store: store, Ready: store.Ready, SetupToken: os.Getenv("MAILBOX_SETUP_TOKEN"), Log: log,
+		DeviceIdle: time.Duration(idle) * 24 * time.Hour}
 	if s.SetupToken != "" && len(s.SetupToken) < 24 {
 		return errors.New("MAILBOX_SETUP_TOKEN must be at least 24 characters")
 	}

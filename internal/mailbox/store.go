@@ -88,8 +88,11 @@ type Store interface {
 	RevokeDevice(ctx context.Context, owner, deviceID string) error
 	// GetDevice returns an active device; ErrNotFound if unknown or revoked.
 	GetDevice(ctx context.Context, deviceID string) (Device, error)
+	// ListDevices returns owner's active devices' ids.
+	ListDevices(ctx context.Context, owner string) ([]string, error)
 
-	// Touch and LastSeen track presence: "mac:<id>", "phone:<mac id>".
+	// Touch and LastSeen track presence: "mac:<id>", "phone:<mac id>",
+	// "dev:<device id>".
 	Touch(ctx context.Context, who string, now time.Time) error
 	LastSeen(ctx context.Context, who string) (time.Time, error)
 
@@ -318,6 +321,19 @@ func (m *Memory) GetDevice(_ context.Context, deviceID string) (Device, error) {
 		return Device{}, ErrNotFound
 	}
 	return Device{SignPub: d.signPub, Owner: d.owner}, nil
+}
+
+func (m *Memory) ListDevices(_ context.Context, owner string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []string
+	for id, d := range m.devs {
+		if d.owner == owner && !d.revoked {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 func (m *Memory) Touch(_ context.Context, who string, now time.Time) error {

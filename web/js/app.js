@@ -108,6 +108,23 @@ function h(tag, attrs = {}, ...kids) {
   return el;
 }
 
+// svgIcon draws a stroked 24x24 icon from a path, as DOM nodes.
+function svgIcon(d) {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS(NS, "path");
+  path.setAttribute("d", d);
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", "currentColor");
+  path.setAttribute("stroke-width", "2.6");
+  path.setAttribute("stroke-linecap", "round");
+  path.setAttribute("stroke-linejoin", "round");
+  svg.append(path);
+  return svg;
+}
+
 // hl renders text with the matched characters highlighted, as DOM nodes.
 function hl(text, positions) {
   if (!positions?.length) return text;
@@ -174,7 +191,10 @@ function fitViewport() {
   const rootStyle = document.documentElement.style;
   rootStyle.setProperty("--app-h", `${vv.height}px`);
   rootStyle.setProperty("--app-top", `${vv.offsetTop}px`);
-  document.documentElement.classList.toggle("kb-open", window.innerHeight - vv.height > 120);
+  // In an installed iOS app innerHeight can shrink along with the keyboard,
+  // so compare against the screen as well.
+  const full = Math.max(window.innerHeight, document.documentElement.clientHeight, screen.height * 0.85);
+  document.documentElement.classList.toggle("kb-open", full - vv.height > 150);
   const list = root.querySelector(".thread");
   if (list && state.view === "thread") list.scrollTop = list.scrollHeight;
 }
@@ -666,8 +686,25 @@ function threadScreen(p) {
         `${clock(it.ts)} · ${label}${it.reason ? ` · ${it.reason}` : ""}`));
   };
 
-  const input = h("textarea", { rows: "2", placeholder: canSend ? "Message…" : "", maxlength: "4000", "aria-label": "Message" });
-  const sendBtn = h("button", { class: "primary", type: "submit" }, "Send");
+  // One rounded field with the send button inside it, like Messages: the
+  // round up-arrow appears only once there's something to send, and the
+  // field grows with the text up to a few lines.
+  const input = h("textarea", { rows: "1", placeholder: canSend ? "Message" : "", maxlength: "4000", "aria-label": "Message", enterkeyhint: "send" });
+  const sendBtn = h("button", { class: "send", type: "submit", "aria-label": "Send", hidden: true },
+    svgIcon("M12 19V5M5 12l7-7 7 7"));
+  const grow = () => {
+    input.style.height = "auto";
+    input.style.height = `${Math.min(input.scrollHeight, 132)}px`;
+    sendBtn.hidden = input.value.trim() === "";
+  };
+  input.addEventListener("input", grow);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && env.kind === "desktop") {
+      e.preventDefault();
+      input.form?.requestSubmit();
+    }
+  });
+  requestAnimationFrame(grow); // a restored draft needs sizing too
   const composer = canSend
     ? h("form", {
       class: "composer",
@@ -675,17 +712,17 @@ function threadScreen(p) {
         ev.preventDefault();
         const body = input.value.trim();
         if (!body) return;
-        sendBtn.disabled = true;
         input.value = "";
+        grow();
+        input.focus(); // keep the keyboard up, as Messages does
         await send(p, task, body, state.replyTo?.id);
         state.replyTo = null;
-        sendBtn.disabled = false;
       },
     },
     state.replyTo ? h("div", { class: "replying" },
       h("span", {}, "Replying to: ", state.replyTo.body.slice(0, 80)),
       h("button", { type: "button", class: "link", onclick: () => go("thread", { replyTo: null }) }, "✕")) : null,
-    h("div", { class: "row2" }, input, sendBtn))
+    h("div", { class: "pill" }, input, sendBtn))
     : h("p", { class: "muted pad" }, session
       ? "Read only. Add this session to ~/.flow-remote/allow.txt on the Mac to message it."
       : "This session isn't running on the Mac.");

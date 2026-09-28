@@ -414,6 +414,24 @@ func (m *Mongo) GetDevice(ctx context.Context, deviceID string) (Device, error) 
 	return Device{SignPub: d.SignPub, Owner: d.Owner}, err
 }
 
+func (m *Mongo) ListDevices(ctx context.Context, owner string) ([]string, error) {
+	cur, err := retry(func() (*mongo.Cursor, error) {
+		return m.devices.Find(ctx, bson.M{"owner": owner, "revoked": false}, options.Find().SetSort(bson.D{{Key: "_id", Value: 1}}))
+	})
+	if err != nil {
+		return nil, err
+	}
+	var docs []deviceDoc
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, err
+	}
+	out := make([]string, len(docs))
+	for i, d := range docs {
+		out[i] = d.ID
+	}
+	return out, nil
+}
+
 func (m *Mongo) Touch(ctx context.Context, who string, now time.Time) error {
 	m.mu.Lock()
 	m.seen[who] = now

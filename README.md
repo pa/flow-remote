@@ -122,7 +122,7 @@ Invites cover everything after that.
 | `start` / `stop` / `status` | run the relay as a launchd agent, stop it, check it |
 | `run` | run the relay in the foreground |
 | `pair [--png FILE]` | show a QR code and enroll a phone |
-| `devices [--all]` / `revoke <device-id>` | list this Mac's active phones (`--all` adds revoked ones), or cut one off |
+| `devices [--all]` / `revoke <device-id>` | list this Mac's active phones with when each last checked in (`--all` adds revoked ones), or cut one off |
 | `invite` | (admin) a single-use code for another Mac |
 | `tenants` / `remove-tenant <mac-id>` | (admin) list or remove Macs |
 
@@ -135,6 +135,7 @@ Invites cover everything after that.
 | `MAILBOX_MONGO_URI` | a MongoDB connection string (Firestore's MongoDB mode works) |
 | `MAILBOX_MONGO_DB` | the database name; defaults to the one in the URI's path |
 | `MAILBOX_SETUP_TOKEN` | registers the first, admin Mac; clear it afterwards |
+| `MAILBOX_DEVICE_IDLE_DAYS` | phone keys unused this long stop working (default 30; `0` never) |
 | `MAILBOX_WEB_DIR` | serves the phone app; the Docker image sets `/web` |
 
 Health check: `GET /v1/health` returns `ok` once the store is connected,

@@ -381,17 +381,40 @@ func devices(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Ask the mailbox when each phone last checked in; offline is fine.
+	seen := map[string]client.DeviceStatus{}
+	idleDays := 0
+	if c, err := adminClient(); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if list, idle, err := c.Devices(ctx); err == nil {
+			idleDays = idle
+			for _, d := range list {
+				seen[d.ID] = d
+			}
+		}
+		cancel()
+	}
 	shown, hidden := 0, 0
 	for _, d := range devs.List() {
 		if d.Revoked() && !all {
 			hidden++
 			continue
 		}
-		state := "active"
-		if d.Revoked() {
-			state = "revoked " + d.RevokedAt.Format(time.DateOnly)
+		state, last := "active", "last seen unknown"
+		if st, ok := seen[d.ID]; ok {
+			if st.LastSeen != nil {
+				last = "last seen " + ago(*st.LastSeen)
+			} else {
+				last = "never seen"
+			}
+			if st.Expired {
+				state = "expired (unused " + fmt.Sprint(idleDays) + "+ days; pair again)"
+			}
 		}
-		fmt.Printf("%s  %-24q  %s  enrolled %s  %s\n", d.ID, d.Name, d.Fingerprint(), d.EnrolledAt.Format(time.DateOnly), state)
+		if d.Revoked() {
+			state, last = "revoked "+d.RevokedAt.Format(time.DateOnly), ""
+		}
+		fmt.Printf("%s  %-22q  %s  enrolled %s  %-22s %s\n", d.ID, d.Name, d.Fingerprint(), d.EnrolledAt.Format(time.DateOnly), last, state)
 		shown++
 	}
 	if shown == 0 {
@@ -401,6 +424,20 @@ func devices(args []string) error {
 		fmt.Printf("(%d revoked, not shown: `flow-remote devices --all`)\n", hidden)
 	}
 	return nil
+}
+
+func ago(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
 }
 
 func revoke(args []string) error {
