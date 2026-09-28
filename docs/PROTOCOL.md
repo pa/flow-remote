@@ -91,21 +91,37 @@ single pairing post, and the mailbox only ever holds public keys.
 `internal/reqsig` (Go) and `web/js/api.js` (WebCrypto) produce the same
 signature, and `go test ./internal/reqsig` checks it.
 
-Keys reach the mailbox in this order:
+Keys reach the mailbox in this order. Each Mac is a tenant, and every rule
+below is scoped to it.
 
-1. **The Mac registers once.** `relay setup` posts its id and sign key to
-   `/v1/macs` with the `X-FR-Setup` header, which must equal the mailbox's
-   `MAILBOX_SETUP_TOKEN`. The request must also be signed by the key it
-   registers, so someone holding the token alone can't register a
-   different key. A mac id keeps its first key.
-2. **The Mac opens a pairing slot.** `relay pair` opens a slot for the
-   offer's pair id. The phone posts its enrollment into that slot, and
-   that's the only unsigned call. A slot takes one enrollment and expires
-   after 2 minutes.
-3. **The Mac registers the device** once you confirm the fingerprint.
-   From then on the mailbox accepts requests signed by that device key.
-   `relay revoke` revokes it there as well, and a revoked id can't be
-   registered again.
+1. **A Mac registers once.** `flow-remote setup` posts its id and sign key
+   to `/v1/macs`, in a request signed by that key, so a token or invite
+   alone can't register a different key. It also carries one of:
+   - `X-FR-Setup`, equal to the mailbox's `MAILBOX_SETUP_TOKEN`. This is
+     for the first Mac, which becomes the **admin**.
+   - `X-FR-Invite`, a single-use code from `flow-remote invite` on an admin
+     Mac. It's valid for 24 hours, the mailbox stores only its SHA-256, and
+     it's spent only once the rest of the request checks out.
 
-Ids are checked by prefix: a device key can't call relay endpoints, and a
-device can only send envelopes as itself.
+   A Mac id keeps its first key. Registering again with the same key needs
+   neither header.
+2. **The Mac opens a pairing slot.** `flow-remote pair` opens a slot for
+   the offer's pair id, owned by that Mac. The phone posts its enrollment
+   into it, which is the only unsigned call. The mailbox accepts it only if
+   the envelope is addressed to the slot's owner. A slot takes one
+   enrollment, expires after 2 minutes, and only its owner can collect it.
+3. **The Mac registers the device** once you confirm the fingerprint. The
+   device is now owned by that Mac, and the mailbox accepts requests signed
+   by its key. `flow-remote revoke` revokes it there too. A revoked id, or
+   another tenant's, can't be registered again.
+
+Scoping, enforced by the mailbox:
+
+- A device sends only as itself, only to its owner Mac, and reads only its
+  own queue and its owner's status.
+- A Mac sends only to devices it owns, and revokes only those.
+- Presence and the relay's poll hint are per tenant.
+- Admin Macs can create invites, list tenants, and remove a tenant, which
+  revokes its devices and deletes its mail. A Mac can't remove itself.
+
+Ids are also checked by prefix: a device key can't call relay endpoints.
