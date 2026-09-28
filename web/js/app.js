@@ -143,6 +143,10 @@ function welcomeScreen() {
   const note = h("p", { class: "muted" });
   return h("main", {},
     bar(adding ? "Pair another Mac" : "Get started", adding ? { back: () => go("settings") } : {}),
+    adding ? null : h("div", { class: "pad center-text" },
+      h("img", { class: "logo", src: "icon.svg", alt: "" }),
+      h("h1", { class: "brand" }, "flow-remote"),
+      h("p", { class: "muted" }, "Message your flow sessions from this phone.")),
     h("section", { class: "card guide" },
       h("h2", {}, "On your Mac"),
       h("ol", {},

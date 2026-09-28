@@ -1,18 +1,19 @@
 :root {
-  --bg: #f3f4f6; --surface: #fff; --ink: #161a22; --muted: #5b6270; --line: #d9dce2;
-  --accent: #c26a12; --accent-ink: #fff; --me: #2f5bd3; --me-ink: #fff;
-  --ok: #1f7a55; --ok-soft: #ddf1e7; --warn: #9a5b00; --warn-soft: #fbebd9;
-  --bad: #b42318; --bad-soft: #fde7e5; --off: #6b7280; --off-soft: #ecedf0;
-  color-scheme: light;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #111318; --surface: #1a1d24; --ink: #e7e9ee; --muted: #9aa1ae; --line: #2c313b;
-    --accent: #f0a04b; --accent-ink: #1a1206; --me: #3d67e0; --me-ink: #fff;
-    --ok: #5acb98; --ok-soft: #16322a; --warn: #f0a04b; --warn-soft: #3a2a17;
-    --bad: #ff8a7e; --bad-soft: #3a1d1a; --off: #a3a9b5; --off-soft: #242832;
-    color-scheme: dark;
-  }
+  /* flow-bar's palette: dark-only, macOS dark system colours. */
+  --bg: #1d1e22;            /* flow-bar popover body */
+  --surface: rgba(255, 255, 255, 0.04);   /* tiles */
+  --field: #101318;         /* inset inputs */
+  --ink: #f5f6fa;
+  --muted: rgba(235, 235, 245, 0.6);
+  --line: rgba(255, 255, 255, 0.08);
+  --accent: #0a84ff; --accent-ink: #fff;  /* flow-bar's fixed blue */
+  --me: #0a84ff; --me-ink: #fff;
+  --ok: #30d158; --ok-soft: rgba(48, 209, 88, 0.14);
+  --warn: #ff9f0a; --warn-soft: rgba(255, 159, 10, 0.14);
+  --bad: #ff453a; --bad-soft: rgba(255, 69, 58, 0.14);
+  --off: rgba(235, 235, 245, 0.55); --off-soft: rgba(255, 255, 255, 0.05);
+  --wave: linear-gradient(90deg, #0aeaa8 0%, #0adcce 55%, #198fff 100%);
+  color-scheme: dark;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
@@ -38,7 +39,7 @@ button.primary { background: var(--accent); color: var(--accent-ink); font-weigh
 button.primary:disabled { opacity: 0.5; }
 button.danger { border: 1px solid var(--bad); color: var(--bad); border-radius: 12px; padding: 12px 16px; }
 button.link { color: var(--muted); text-decoration: underline; padding: 8px; }
-input, textarea { font: inherit; color: inherit; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; width: 100%; }
+input, textarea { font: inherit; color: inherit; background: var(--field); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; width: 100%; }
 label { display: flex; flex-direction: column; gap: 6px; text-align: left; font-size: 14px; color: var(--muted); }
 
 .bar { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px;
@@ -98,3 +99,10 @@ main > .muted { padding: 0 16px; text-align: center; }
 .macchip { border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; font-size: 13px; white-space: nowrap; display: inline-flex; gap: 6px; align-items: center; }
 .macchip.on { background: var(--me); color: var(--me-ink); border-color: var(--me); }
 .card h2 { font-size: 16px; display: flex; gap: 8px; align-items: center; }
+
+.logo { width: 56px; height: 56px; border-radius: 13px; display: block; margin: 8px auto 0; }
+.brand { background: var(--wave); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.bar { background: rgba(29, 30, 34, 0.92); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
+.them { background: rgba(255, 255, 255, 0.07); border-color: transparent; }
+button.primary:active { filter: brightness(0.9); }
+.center-text { text-align: center; display: flex; flex-direction: column; gap: 6px; }
