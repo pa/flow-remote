@@ -178,3 +178,9 @@ MAILBOX_SETUP_TOKEN=dev-token-dev-token-dev-token MAILBOX_WEB_DIR=web go run ./c
 
 For a test Mac that doesn't touch your Keychain, set
 `FLOW_REMOTE_KEYSTORE=dir FLOW_REMOTE_HOME=/tmp/fr`.
+
+## License
+
+MIT, see [LICENSE](LICENSE). The vendored libraries in `web/vendor` keep
+their own licenses (jsQR: Apache-2.0, qrcode-generator: MIT); see
+[web/vendor/VENDOR.md](web/vendor/VENDOR.md).
