@@ -97,7 +97,7 @@ Read from `docs/encryption.md`, `apps/cli/src/api/encryption.ts`,
 
 ### What we're borrowing
 
-- **Tenants identified by keys (built, commit c33d7a6).** In Happier an
+- **Tenants identified by keys (built).** In Happier an
   account is a key pair and the relay scopes everything to it. flow-remote
   does the same per Mac:
   a phone is bound to the Mac that enrolled it, can only reach that Mac's
