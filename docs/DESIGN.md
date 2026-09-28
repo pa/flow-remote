@@ -21,7 +21,7 @@ the choices and the tools we compared against.
   its device key.
 - **Mailbox:** stores sealed envelopes until they're collected. Every call
   is signed; there's no login.
-- **Relay:** checks the signature and replay list, opens the envelope,
+- **Relay** (`flow-remote start`): checks the signature and replay list, opens the envelope,
   applies `~/.flow-remote/allow.txt`, and runs `flow message`. Session mail
   goes back to the phone the same way.
 
@@ -34,12 +34,14 @@ no message text or private keys.
 
 | Decision | Why |
 | --- | --- |
-| Per-device keys, not a shared account key | a lost phone is revoked on its own (`relay revoke`); nothing else has to rotate |
+| Per-device keys, not a shared account key | a lost phone is revoked on its own (`flow-remote revoke`); nothing else has to rotate |
 | Every message signed and sealed | the mailbox can't read, forge or splice messages |
 | Replay window of 7 days, not 5 minutes | a 5-minute window dropped every message sent while the Mac slept |
 | No sign-in; requests signed by device or Mac key | a login protected nothing secret; signatures keep strangers out |
 | Polling, adaptive 3s/60s | an always-open Cloud Run request costs about $45–60/month |
 | Pub/Sub streaming pull later | the Mac needs a credential scoped to one subscription; skoop can't issue one yet (reported) |
+| Each Mac a tenant; invites, not a shared token | your other Macs and other people's are separate by construction; an invite registers exactly one Mac |
+| Mailbox is a plain container; deploy targets in `deploy/` | skoop is one host among several (see deploy/skoop, deploy/docker) |
 | Every live session reachable (`*` in allow.txt) | the user's choice; it overrides the brief's customer-session exclusion, so customer sessions with skipped permissions will act on phone messages |
 
 ## Prior art we checked
@@ -89,14 +91,15 @@ Read from `docs/encryption.md`, `apps/cli/src/api/encryption.ts`,
 | Lost phone | rotate the account key | revoke that device |
 | Authenticity | AES-GCM: any key holder can write | each message signed; replays caught |
 | Pairing | QR + temporary key + HMAC secret | the same shape: QR + keys + HMAC one-time secret |
-| Multiple machines / people | built in: accounts are key-identified | the next piece of work |
+| Multiple machines / people | built in: accounts are key-identified | per-Mac tenants with single-use invites |
 | Phone app | native, so pairing doesn't trust a web origin | web app, which does |
 | Delivery | WebSockets | polling |
 
 ### What we're borrowing
 
-- **Tenants identified by keys.** In Happier an account is a key pair and
-  the relay scopes everything to it. flow-remote will do the same per Mac:
+- **Tenants identified by keys (built, commit c33d7a6).** In Happier an
+  account is a key pair and the relay scopes everything to it. flow-remote
+  does the same per Mac:
   a phone is bound to the Mac that enrolled it, can only reach that Mac's
   queue, and a Mac can only manage its own phones. Your other Macs and
   other people's Macs are then separate by construction.

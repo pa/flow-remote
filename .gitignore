@@ -3,3 +3,5 @@
 .DS_Store
 .skoop/local/
 node_modules/
+.skoop/
+deploy/docker/.env

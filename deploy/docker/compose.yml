@@ -1,0 +1,38 @@
+# Self-host the mailbox on any machine with Docker: the mailbox, MongoDB,
+# and Caddy for automatic HTTPS (the phone app needs a secure origin for
+# WebCrypto and the camera).
+#
+#   cp .env.example .env    # set DOMAIN and MAILBOX_SETUP_TOKEN
+#   docker compose up -d
+#
+# Point DOMAIN's DNS at this machine first, so Caddy can get a certificate.
+services:
+  mailbox:
+    build:
+      context: ../..
+    restart: unless-stopped
+    environment:
+      MAILBOX_STORE: mongo
+      MAILBOX_MONGO_URI: mongodb://mongo:27017/flowremote
+      MAILBOX_SETUP_TOKEN: ${MAILBOX_SETUP_TOKEN:-}
+    depends_on: [mongo]
+
+  mongo:
+    image: mongo:8
+    restart: unless-stopped
+    volumes: [mongo-data:/data/db]
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on: [mailbox]
+
+volumes:
+  mongo-data:
+  caddy-data:
