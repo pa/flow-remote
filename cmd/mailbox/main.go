@@ -12,12 +12,16 @@
 //	MAILBOX_MONGO_URI     connection string, for "mongo"
 //	MAILBOX_MONGO_DB      database name (default "flow-remote")
 //	MAILBOX_DEV_AUTH=1    accept "Bearer dev:<email>" (local only)
-//	MAILBOX_WEB_DIR       also serve the phone app from this directory
-//	                      (local only; on GCP, Firebase Hosting serves it)
+//	MAILBOX_WEB_DIR       also serve the phone app from this directory.
+//	                      Firebase Hosting only forwards to Cloud Run, so
+//	                      on GCP the image bakes the app in at /web.
+//	FIREBASE_API_KEY, FIREBASE_AUTH_DOMAIN, FIREBASE_APP_ID
+//	                      the web app's sign-in settings, served as /config.js
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -76,15 +80,7 @@ func run(log *slog.Logger) error {
 	}
 	handler := s.Handler()
 	if dir := os.Getenv("MAILBOX_WEB_DIR"); dir != "" {
-		if os.Getenv("K_SERVICE") != "" {
-			return errors.New("MAILBOX_WEB_DIR is for local runs; Firebase Hosting serves the app on GCP")
-		}
-		api := handler
-		mux := http.NewServeMux()
-		mux.Handle("/v1/", api)
-		mux.Handle("/healthz", api)
-		mux.Handle("/", http.FileServer(http.Dir(dir)))
-		handler = mux
+		handler = withApp(handler, dir, s.DevAuth, s.Owner)
 	}
 	srv := &http.Server{Addr: "0.0.0.0:" + port, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
@@ -98,6 +94,48 @@ func run(log *slog.Logger) error {
 		return err
 	}
 	return nil
+}
+
+// withApp serves the phone app next to the API. /config.js is generated
+// from the environment, so one image works for every deployment.
+func withApp(api http.Handler, dir string, devAuth bool, owner string) http.Handler {
+	cfg := map[string]any{
+		"firebase": map[string]string{
+			"apiKey":     os.Getenv("FIREBASE_API_KEY"),
+			"authDomain": os.Getenv("FIREBASE_AUTH_DOMAIN"),
+			"projectId":  os.Getenv("FIREBASE_PROJECT_ID"),
+			"appId":      os.Getenv("FIREBASE_APP_ID"),
+		},
+		"tenantId": os.Getenv("FIREBASE_TENANT_ID"),
+		"devEmail": "",
+	}
+	if devAuth {
+		cfg["devEmail"] = owner
+	}
+	cfgJS, _ := json.Marshal(cfg)
+	files := http.FileServer(http.Dir(dir))
+
+	mux := http.NewServeMux()
+	mux.Handle("/v1/", api)
+	mux.Handle("/healthz", api)
+	mux.HandleFunc("GET /config.js", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		fmt.Fprintf(w, "export default %s;\n", cfgJS)
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Revalidate on every load, so the CDN and the service worker
+		// pick up a deploy right away.
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("X-Frame-Options", "DENY")
+		if r.URL.Path == "/sw.js" {
+			w.Header().Set("Service-Worker-Allowed", "/")
+		}
+		files.ServeHTTP(w, r)
+	})
+	return mux
 }
 
 func openStore(ctx context.Context) (mailbox.Store, error) {

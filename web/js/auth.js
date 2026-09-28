@@ -1,5 +1,6 @@
-// Sign-in. On GCP this is Google through Identity Platform; locally,
-// config.devEmail skips it and the mailbox (with MAILBOX_DEV_AUTH=1)
+// Sign-in. On GCP this is Google through Identity Platform. The mailbox
+// serves config.js from its environment. Locally,
+// with MAILBOX_DEV_AUTH=1 it sets devEmail, which skips sign-in, and the mailbox
 // trusts "Bearer dev:<email>".
 import config from "../config.js";
 

@@ -3,4 +3,3 @@
 .DS_Store
 .skoop/local/
 node_modules/
-web/config.js

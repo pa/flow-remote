@@ -1,0 +1,6 @@
+.git
+bin
+docs
+**/*_test.go
+internal/interop
+.skoop
