@@ -88,7 +88,6 @@ func withApp(api http.Handler, dir string) http.Handler {
 	files := http.FileServer(http.Dir(dir))
 	mux := http.NewServeMux()
 	mux.Handle("/v1/", api)
-	mux.Handle("/healthz", api)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Revalidate on every load, so the CDN and the service worker
 		// pick up a deploy right away.

@@ -45,7 +45,7 @@ type Server struct {
 	// SetupToken lets a Mac register its key. Empty disables registration.
 	SetupToken string
 	// Ready, if set, gates the API: until it returns nil every call gets
-	// 503, and /healthz says why.
+	// 503, and /v1/health says why.
 	Ready func() error
 	Now   func() time.Time
 	Log   *slog.Logger
@@ -64,7 +64,9 @@ func (s *Server) now() time.Time {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+	// Not /healthz: Google's front end reserves paths like it, so on Cloud
+	// Run the request never reaches the container.
+	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, _ *http.Request) {
 		if err := s.ready(); err != nil {
 			s.fail(w, http.StatusServiceUnavailable, "store not ready: "+err.Error())
 			return
@@ -91,7 +93,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/relay/envelopes", s.mac(s.relayPost))
 	mux.HandleFunc("POST /v1/relay/ack", s.mac(s.relayAck))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/healthz" && s.ready() != nil {
+		if r.URL.Path != "/v1/health" && s.ready() != nil {
 			s.fail(w, http.StatusServiceUnavailable, "the mailbox is starting; try again shortly")
 			return
 		}

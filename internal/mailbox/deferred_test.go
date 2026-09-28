@@ -42,7 +42,7 @@ func TestDeferredStartsServingBeforeTheStore(t *testing.T) {
 	}, nil)
 	<-attempts
 
-	if code, body := get("/healthz"); code != http.StatusServiceUnavailable || !strings.Contains(body, "permission denied") {
+	if code, body := get("/v1/health"); code != http.StatusServiceUnavailable || !strings.Contains(body, "permission denied") {
 		t.Fatalf("healthz before connect: %d %s", code, body)
 	}
 	if code, _ := get("/v1/envelopes"); code != http.StatusServiceUnavailable {
@@ -55,7 +55,7 @@ func TestDeferredStartsServingBeforeTheStore(t *testing.T) {
 	for d.Ready() != nil && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if code, body := get("/healthz"); code != http.StatusOK {
+	if code, body := get("/v1/health"); code != http.StatusOK {
 		t.Fatalf("healthz after connect: %d %s", code, body)
 	}
 	if code, _ := get("/v1/envelopes"); code != http.StatusUnauthorized {

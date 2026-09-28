@@ -20,7 +20,7 @@ self.addEventListener("activate", (e) => {
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (url.origin !== location.origin || e.request.method !== "GET") return;
-  if (url.pathname.startsWith("/v1/") || url.pathname === "/healthz") return;
+  if (url.pathname.startsWith("/v1/")) return;
   // Network first, so a deploy shows up on the next open; cache when offline.
   e.respondWith(
     fetch(e.request)
