@@ -252,7 +252,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v14";
+const BUILD = "v15";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -698,6 +698,14 @@ function waitingScreen(p) {
     h("button", { class: "link", onclick: () => unpair(p) }, "Cancel pairing"));
 }
 
+// macOffline: the Mac hasn't checked in for a while, so the session list
+// is only the last one it sent, and "live" can't be trusted.
+function macOffline(p) {
+  const seen = state.macSeen[p.mac_id];
+  if (seen === undefined) return false; // not checked yet
+  return seen === null || Date.now() - seen.getTime() > ONLINE_MS;
+}
+
 function macLine(p) {
   if (p.rejected) {
     return h("span", { class: "status warn" }, "This Mac revoked this phone. ",
@@ -753,8 +761,10 @@ function sessionsScreen(p) {
   };
   // project · #tag #tag, the task's place in flow.
   const whereOf = (s) => [s.project, (s.tags || []).map((t) => "#" + t).join(" ")].filter(Boolean).join(" · ");
+  const offline = macOffline(p);
   const liveRow = (s, marks) => row(s.slug, s.waiting_on ? `waiting on ${s.waiting_on}` : s.name,
-    s.can_send ? "live" : "read only", s.can_send ? "live" : "ro", marks, whereOf(s));
+    offline ? "Mac offline" : s.can_send ? "live" : "read only",
+    offline ? "off" : s.can_send ? "live" : "ro", marks, whereOf(s));
 
   const searchBox = h("input", {
     class: "search", type: "search", placeholder: "Search sessions and messages", value: state.query,
@@ -824,7 +834,7 @@ function sessionsScreen(p) {
     bar(macLabel(p), { sub: macLine(p) }),
     macSwitcher(),
     h("div", { class: "searchbar" }, searchBox),
-    h("div", { class: "list" }, body),
+    h("div", { class: `list ${offline ? "dim" : ""}` }, body),
     h("footer", { class: "foot" },
       h("button", { class: "link", onclick: () => { sendSync(p); go("settings"); } }, "Settings")));
 }
@@ -855,7 +865,7 @@ function threadScreen(p) {
         h("div", { class: "bubble them" }, it.urgent ? h("span", { class: "chip urgent" }, "urgent") : null, it.body),
         h("span", { class: "meta" }, `${clock(it.ts)}${it.broadcast ? " · broadcast" : ""}`));
     }
-    const label = { sending: "sending…", sent: "sent, waiting for the Mac", delivered: "delivered", refused: "refused", failed: "failed", stale: "not delivered", resent: "sent again below" }[it.state] || it.state;
+    const label = { sending: "sending…", sent: "sent, waiting for the Mac", delivered: "in the session's inbox", refused: "refused", failed: "failed", stale: "not delivered", resent: "sent again below" }[it.state] || it.state;
     const bad = it.state === "refused" || it.state === "failed" || it.state === "stale";
     return h("div", { class: "msg out" },
       h("div", { class: "bubble me" }, it.body),
@@ -875,7 +885,8 @@ function threadScreen(p) {
   // One rounded field with the send button inside it, like Messages: the
   // round up-arrow appears only once there's something to send, and the
   // field grows with the text up to a few lines.
-  const input = h("textarea", { rows: "1", placeholder: canSend ? "Message" : "", maxlength: "4000", "aria-label": "Message", enterkeyhint: "enter" });
+  const offline = macOffline(p);
+  const input = h("textarea", { rows: "1", placeholder: canSend ? (offline ? "The Mac is offline; this waits until it's back" : "Message") : "", maxlength: "4000", "aria-label": "Message", enterkeyhint: "enter" });
   const sendBtn = h("button", { class: "send", type: "submit", "aria-label": "Send", hidden: true },
     svgIcon("M12 19V5M5 12l7-7 7 7"));
   const grow = () => {
@@ -914,7 +925,7 @@ function threadScreen(p) {
       : "This session isn't running on the Mac.");
 
   return h("main", { class: "threadview" },
-    bar(task, { back: goBack, backCount: itemsCache.filter((it) => it.dir === "in" && !it.read && !(it.mac === p.mac_id && it.task === task)).length, sub: h("span", { class: session ? "status ok" : "status" }, [macLabel(p), session ? "live" : "not running", session?.project].filter(Boolean).join(" · ")) }),
+    bar(task, { back: goBack, backCount: itemsCache.filter((it) => it.dir === "in" && !it.read && !(it.mac === p.mac_id && it.task === task)).length, sub: h("span", { class: offline ? "status warn" : session ? "status ok" : "status" }, [macLabel(p), offline ? "Mac offline" : session ? "live" : "not running", session?.project].filter(Boolean).join(" · ")) }),
     h("div", { class: "thread" }, items.length ? items.map(bubble) : h("p", { class: "muted pad" }, "No messages yet.")),
     composer);
 }

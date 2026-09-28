@@ -153,3 +153,4 @@ button.inline { color: var(--accent); text-decoration: underline; padding: 0; fo
 .where { font-size: 12px; color: var(--muted); opacity: 0.8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .msg.out .inline { font-size: 13px; }
 main { will-change: auto; }
+.list.dim .row { opacity: 0.55; }

@@ -292,6 +292,11 @@ func printQR(c *qr.Code) {
 	fmt.Print(b.String())
 }
 
+// maxBackoff caps the wait between retries while the mailbox is
+// unreachable (Wi-Fi down, Mac asleep), so the relay is back within this
+// long of the network returning.
+const maxBackoff = 30 * time.Second
+
 func run(ctx context.Context) error {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -345,7 +350,7 @@ func run(ctx context.Context) error {
 				return ctx.Err()
 			}
 			log.Warn("tick", "err", err)
-			wait, backoff = backoff, min(backoff*2, 5*time.Minute)
+			wait, backoff = backoff, min(backoff*2, maxBackoff)
 		} else {
 			backoff = time.Second
 		}
