@@ -162,8 +162,17 @@ async function startScan(video, note) {
     stream.getTracks().forEach((t) => t.stop());
     stopScan = null;
   };
+  // iOS Safari plays a camera stream inline only with these set as
+  // properties, not just attributes.
+  video.muted = true;
+  video.playsInline = true;
+  video.setAttribute("autoplay", "");
   video.srcObject = stream;
-  await video.play().catch(() => {});
+  try {
+    await video.play();
+  } catch (e) {
+    note.textContent = `The camera wouldn't start (${e.name}). Paste the pairing link instead.`;
+  }
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   const frame = () => {

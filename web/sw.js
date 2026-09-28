@@ -1,6 +1,6 @@
 // Caches the app shell so it opens offline. API calls always go to the
 // network: they're authenticated and must never be served from a cache.
-const CACHE = "flow-remote-v2";
+const CACHE = "flow-remote-v3";
 const SHELL = [
   "./", "./index.html", "./app.css", "./manifest.webmanifest", "./icon.svg",
   "./js/app.js", "./js/api.js", "./js/db.js", "./js/envelope.js", "./js/pairing.js",

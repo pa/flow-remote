@@ -9,7 +9,8 @@
 //	                      Empty disables registration.
 //	MAILBOX_STORE         "memory" (default) or "mongo"
 //	MAILBOX_MONGO_URI     connection string, for "mongo"
-//	MAILBOX_MONGO_DB      database name (default "flow-remote")
+//	MAILBOX_MONGO_DB      database name (default "flowremote"; Firestore's
+//	                      MongoDB mode rejects hyphens in database names)
 //	MAILBOX_WEB_DIR       also serve the phone app from this directory.
 //	                      Firebase Hosting only forwards to Cloud Run, so
 //	                      on GCP the image bakes the app in at /web.
@@ -115,7 +116,7 @@ func openStore(ctx context.Context) (mailbox.Store, error) {
 		}
 		name := os.Getenv("MAILBOX_MONGO_DB")
 		if name == "" {
-			name = "flow-remote"
+			name = "flowremote"
 		}
 		return mailbox.OpenMongo(ctx, uri, name)
 	default:
