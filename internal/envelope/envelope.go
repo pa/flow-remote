@@ -200,3 +200,7 @@ func EncodeSignPub(k *ecdsa.PublicKey) string {
 }
 
 func EncodeBoxPub(k *ecdh.PublicKey) string { return b64.EncodeToString(k.Bytes()) }
+
+// Decode and Encode are the unpadded base64url used for every binary field.
+func Decode(s string) ([]byte, error) { return b64.DecodeString(s) }
+func Encode(b []byte) string          { return b64.EncodeToString(b) }

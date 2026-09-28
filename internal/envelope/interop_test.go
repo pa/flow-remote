@@ -1,42 +1,36 @@
-package envelope
+package envelope_test
 
 import (
-	"bytes"
+	"crypto/ecdh"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/json"
-	"os/exec"
 	"testing"
 	"time"
+
+	. "github.com/pa/flow-remote/internal/envelope"
+	"github.com/pa/flow-remote/internal/interop"
 )
 
-// node runs testdata/interop.mjs, which drives web/js/envelope.js through
-// WebCrypto. It proves the phone and the Mac agree on every byte.
-func node(t *testing.T, req, resp any) {
-	t.Helper()
-	bin, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node not installed; WebCrypto interop not checked")
-	}
-	in, _ := json.Marshal(req)
-	cmd := exec.Command(bin, "testdata/interop.mjs")
-	cmd.Stdin = bytes.NewReader(in)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("node: %v\n%s", err, stderr.String())
-	}
-	if err := json.Unmarshal(out, resp); err != nil {
-		t.Fatalf("node output %q: %v", out, err)
-	}
+type keys struct {
+	sign *ecdsa.PrivateKey
+	box  *ecdh.PrivateKey
+}
+
+func newKeys(t *testing.T) keys {
+	s, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	b, _ := ecdh.P256().GenerateKey(rand.Reader)
+	return keys{s, b}
 }
 
 func TestInteropPhoneToMac(t *testing.T) {
-	mac := newParty(t)
+	mac := newKeys(t)
 	var got struct {
 		SignPub string   `json:"sign_pub"`
 		Env     Envelope `json:"env"`
 	}
-	node(t, map[string]any{
+	interop.Node(t, map[string]any{
 		"mode": "seal", "plaintext": "from webcrypto ✓",
 		"mac_box_pub": EncodeBoxPub(mac.box.PublicKey()), "ts": time.Now().UnixMilli(),
 	}, &got)
@@ -58,13 +52,13 @@ func TestInteropPhoneToMac(t *testing.T) {
 }
 
 func TestInteropMacToPhone(t *testing.T) {
-	mac := newParty(t)
+	mac := newKeys(t)
 	var phone struct {
 		SignPub string          `json:"sign_pub"`
 		BoxPub  string          `json:"box_pub"`
 		BoxJWK  json.RawMessage `json:"box_jwk"`
 	}
-	node(t, map[string]any{"mode": "gen"}, &phone)
+	interop.Node(t, map[string]any{"mode": "gen"}, &phone)
 
 	boxPub, err := ParseBoxPub(phone.BoxPub)
 	if err != nil {
@@ -77,7 +71,7 @@ func TestInteropMacToPhone(t *testing.T) {
 	var got struct {
 		Plaintext string `json:"plaintext"`
 	}
-	node(t, map[string]any{
+	interop.Node(t, map[string]any{
 		"mode": "open", "env": e, "box_jwk": phone.BoxJWK, "box_pub": phone.BoxPub,
 		"mac_sign_pub": EncodeSignPub(&mac.sign.PublicKey),
 	}, &got)

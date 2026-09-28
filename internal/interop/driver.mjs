@@ -1,7 +1,8 @@
-// Test driver for interop_test.go. Reads a JSON request on stdin, writes a
+// Driver for the interop package. Reads a JSON request on stdin, writes a
 // JSON answer on stdout. Test-only: keys are extractable so they can cross
 // the process boundary.
-import * as env from "../../../web/js/envelope.js";
+import * as env from "../../web/js/envelope.js";
+import * as pairing from "../../web/js/pairing.js";
 
 const subtle = globalThis.crypto.subtle;
 const ECDH = { name: "ECDH", namedCurve: "P-256" };
@@ -34,6 +35,21 @@ switch (req.mode) {
       publicKey: await env.importBoxPub(req.box_pub),
     };
     out = { plaintext: await env.open(req.env, pair) };
+    break;
+  }
+  case "enroll": {
+    // Act as a phone scanning the QR: parse the link, enroll, report the
+    // fingerprint the phone would show.
+    const offer = pairing.parseOffer(new URL(req.link).hash);
+    const id = await env.generateIdentity(true);
+    const pub = await env.exportPublic(id);
+    const deviceId = pairing.newDeviceId();
+    const e = await pairing.enrollmentEnvelope(offer, id, deviceId, req.name, req.now);
+    out = {
+      env: e, device_id: deviceId,
+      fingerprint: await env.fingerprint(pub.sign_pub, pub.box_pub),
+      mac_fingerprint: await env.fingerprint(offer.mac_sign_pub, offer.mac_box_pub),
+    };
     break;
   }
   default:

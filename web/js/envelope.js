@@ -112,3 +112,11 @@ export async function open(e, boxKeyPair) {
   );
   return dec.decode(pt);
 }
+
+// fingerprint matches identity.Fingerprint in Go: the first 10 bytes of
+// SHA-256(sign_pub || box_pub) as hex, in groups of four.
+export async function fingerprint(signPub, boxPub) {
+  const h = new Uint8Array(await subtle.digest("SHA-256", concat(unb64u(signPub), unb64u(boxPub))));
+  const hex = Array.from(h.slice(0, 10), (b) => b.toString(16).padStart(2, "0")).join("");
+  return hex.match(/.{4}/g).join(" ");
+}
