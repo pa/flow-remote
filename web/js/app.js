@@ -32,6 +32,7 @@ const state = {
   error: "",
   replyTo: null,
   query: "", // sessions-screen search
+  toast: null, // {mac, task, body}: a reply that just arrived elsewhere
 };
 
 const root = document.getElementById("app");
@@ -207,6 +208,42 @@ document.addEventListener("focusin", (e) => {
   if (e.target.tagName === "TEXTAREA") requestAnimationFrame(() => { window.scrollTo(0, 0); fitViewport(); });
 });
 
+// ---- reply indicators ----
+
+let toastTimer = null;
+
+function showToast(t) {
+  state.toast = t;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { state.toast = null; backgroundRender(); }, 6000);
+}
+
+function toastView(t) {
+  const p = state.pairings.find((x) => x.mac_id === t.mac);
+  return h("button", {
+    class: "toast",
+    onclick: async () => {
+      state.toast = null;
+      if (t.mac !== state.active) {
+        state.active = t.mac;
+        await db.set("active", state.active);
+      }
+      openThread(t.task);
+    },
+  },
+  h("span", { class: "slug" }, t.task, state.pairings.length > 1 && p ? ` · ${macLabel(p)}` : ""),
+  h("span", { class: "preview" }, t.body));
+}
+
+// The home-screen icon badge, where the platform allows it.
+function updateAppBadge() {
+  const n = itemsCache.filter((it) => it.dir === "in" && !it.read).length;
+  try {
+    if (n > 0) navigator.setAppBadge?.(n)?.catch?.(() => {});
+    else navigator.clearAppBadge?.()?.catch?.(() => {});
+  } catch {}
+}
+
 function render() {
   // Keep a half-typed message, and the search box, with their focus.
   const ta = root.querySelector("textarea");
@@ -214,7 +251,9 @@ function render() {
   const sb = root.querySelector("input.search");
   const searchFocus = sb && document.activeElement === sb ? { start: sb.selectionStart, end: sb.selectionEnd } : null;
   root.replaceChildren(screen());
+  if (state.toast) root.append(toastView(state.toast));
   document.documentElement.classList.toggle("in-thread", state.view === "thread");
+  updateAppBadge();
   fitViewport();
   const nextSb = root.querySelector("input.search");
   if (searchFocus && nextSb) {
@@ -253,9 +292,10 @@ function screen() {
   return sessionsScreen(p);
 }
 
-function bar(title, { back, sub } = {}) {
+function bar(title, { back, sub, backCount } = {}) {
   return h("header", { class: "bar" },
-    back ? h("button", { class: "back", "aria-label": "Back", onclick: back }, "‹") : null,
+    back ? h("button", { class: "back", "aria-label": backCount ? `Back, ${backCount} unread` : "Back", onclick: back },
+      "‹", backCount ? h("span", { class: "count" }, backCount) : null) : null,
     h("div", { class: "titles" }, h("h1", {}, title), sub ?? null));
 }
 
@@ -636,11 +676,33 @@ function sessionsScreen(p) {
       hits.length || msgHits.length ? null : h("p", { class: "muted pad" }, `Nothing matches "${q}".`),
     ];
   } else {
+    // Sessions with unread replies go first, newest reply on top, with
+    // a preview; the rest keep their usual order below.
+    const latestUnread = {};
+    for (const it of mine) {
+      if (it.dir === "in" && !it.read && (!latestUnread[it.task] || it.ts > latestUnread[it.task].ts)) latestUnread[it.task] = it;
+    }
+    const replied = Object.values(latestUnread).sort((a, b) => b.ts - a.ts);
+    const repliedSet = new Set(replied.map((it) => it.task));
+    const liveBySlug = new Map(live.map((s) => [s.slug, s]));
     body = [
+      replied.length ? h("h2", { class: "section new" }, "New replies") : null,
+      replied.map((it) => {
+        const s = liveBySlug.get(it.task);
+        const n = unreadCount(p.mac_id, it.task);
+        return h("button", { class: "row", onclick: () => openThread(it.task) },
+          h("div", { class: "top" },
+            h("span", { class: "slug" }, it.task),
+            h("span", { class: "badge" }, n),
+            h("span", { class: "meta" }, ago(it.ts))),
+          h("span", { class: "preview" }, it.body),
+          s ? null : h("span", { class: "sub" }, "not running"));
+      }),
+      replied.length && live.some((s) => !repliedSet.has(s.slug)) ? h("h2", { class: "section" }, "Sessions") : null,
       live.length ? null : h("p", { class: "muted pad" }, "No live sessions reported yet."),
-      live.map((s) => liveRow(s)),
-      earlier.length ? h("h2", { class: "section" }, "Not running") : null,
-      earlier.map((slug) => row(slug, "", "not running", "off")),
+      live.filter((s) => !repliedSet.has(s.slug)).map((s) => liveRow(s)),
+      earlier.filter((t) => !repliedSet.has(t)).length ? h("h2", { class: "section" }, "Not running") : null,
+      earlier.filter((t) => !repliedSet.has(t)).map((slug) => row(slug, "", "not running", "off")),
     ];
   }
 
@@ -689,7 +751,7 @@ function threadScreen(p) {
   // One rounded field with the send button inside it, like Messages: the
   // round up-arrow appears only once there's something to send, and the
   // field grows with the text up to a few lines.
-  const input = h("textarea", { rows: "1", placeholder: canSend ? "Message" : "", maxlength: "4000", "aria-label": "Message", enterkeyhint: "send" });
+  const input = h("textarea", { rows: "1", placeholder: canSend ? "Message" : "", maxlength: "4000", "aria-label": "Message", enterkeyhint: "enter" });
   const sendBtn = h("button", { class: "send", type: "submit", "aria-label": "Send", hidden: true },
     svgIcon("M12 19V5M5 12l7-7 7 7"));
   const grow = () => {
@@ -728,7 +790,7 @@ function threadScreen(p) {
       : "This session isn't running on the Mac.");
 
   return h("main", { class: "threadview" },
-    bar(task, { back: () => go("sessions"), sub: h("span", { class: session ? "status ok" : "status" }, `${macLabel(p)} · ${session ? "live" : "not running"}`) }),
+    bar(task, { back: () => go("sessions"), backCount: itemsCache.filter((it) => it.dir === "in" && !it.read && !(it.mac === p.mac_id && it.task === task)).length, sub: h("span", { class: session ? "status ok" : "status" }, `${macLabel(p)} · ${session ? "live" : "not running"}`) }),
     h("div", { class: "thread" }, items.length ? items.map(bubble) : h("p", { class: "muted pad" }, "No messages yet.")),
     composer);
 }
@@ -865,9 +927,12 @@ async function handle(p, e) {
         urgent: Boolean(mail.urgent), broadcast: Boolean(mail.broadcast),
         read: here && state.task === mail.task, replied: false,
       });
-      // In the open thread, offer to answer what just arrived.
-      if (here && state.task === mail.task && !mail.broadcast && !state.replyTo) {
-        state.replyTo = { id: mail.flow_id, body: mail.body };
+      // In the open thread, offer to answer what just arrived; anywhere
+      // else, say it arrived.
+      if (here && state.task === mail.task) {
+        if (!mail.broadcast && !state.replyTo) state.replyTo = { id: mail.flow_id, body: mail.body };
+      } else if (!mail.broadcast && Date.now() - mail.created_at < 10 * 60_000) {
+        showToast({ mac: p.mac_id, task: mail.task, body: mail.body });
       }
       break;
     }
