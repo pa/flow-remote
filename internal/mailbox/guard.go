@@ -24,10 +24,11 @@ import (
 //   - Each client IP gets a request budget. It's best effort: behind
 //     Google's front end the client address comes from X-Forwarded-For.
 const (
-	keyCacheTTL = 100 * 365 * 24 * time.Hour // entries leave by drop(), not by age
-	missRate    = 5                          // per second, across all clients
-	missBurst   = 20                         //
-	ipPerMinute = 600
+	keyCacheTTL  = 100 * 365 * 24 * time.Hour // entries leave by drop(), not by age
+	missRate     = 5                          // per second, across all clients
+	missBurst    = 20                         //
+	ipPerMinute  = 600
+	maxIPBuckets = 50_000
 )
 
 type cacheEntry struct {
@@ -124,19 +125,82 @@ func (l *ipLimiter) allow(ip string, now time.Time) bool {
 	}
 	b := l.buckets[ip]
 	if b == nil {
-		b = &bucket{}
-		l.buckets[ip] = b
+		// Past this many addresses in a minute, new ones share one bucket,
+		// so a stream of distinct addresses can't grow memory without bound.
+		if len(l.buckets) >= maxIPBuckets {
+			ip = "overflow"
+			b = l.buckets[ip]
+		}
+		if b == nil {
+			b = &bucket{}
+			l.buckets[ip] = b
+		}
 	}
 	l.mu.Unlock()
 	return b.take(ipPerMinute/60.0, ipPerMinute/4.0, now)
 }
 
-// clientIP is the first X-Forwarded-For entry when present (Cloud Run and
-// Firebase Hosting set it), else the connection's address.
-func clientIP(r *http.Request) string {
+// TrustedProxies are the front ends whose X-Forwarded-For entry we accept
+// as naming the real client. Measured on Firebase Hosting in front of Cloud
+// Run: Hosting drops whatever X-Forwarded-For the client sent, sets
+// "<client>, <hosting edge>", and the edge is in 66.249.64.0/19. Straight
+// to Cloud Run, the client's own entries survive and Google appends the
+// real address last.
+var TrustedProxies = mustCIDRs("66.249.64.0/19")
+
+func mustCIDRs(list ...string) []*net.IPNet {
+	var out []*net.IPNet
+	for _, c := range list {
+		if _, n, err := net.ParseCIDR(c); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// ParseTrustedProxies reads a comma-separated CIDR list.
+func ParseTrustedProxies(csv string) ([]*net.IPNet, error) {
+	var out []*net.IPNet
+	for _, c := range strings.Split(csv, ",") {
+		if c = strings.TrimSpace(c); c == "" {
+			continue
+		}
+		_, n, err := net.ParseCIDR(c)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
+func trusted(ip string, proxies []*net.IPNet) bool {
+	p := net.ParseIP(ip)
+	if p == nil {
+		return false
+	}
+	for _, n := range proxies {
+		if n.Contains(p) {
+			return true
+		}
+	}
+	return false
+}
+
+// clientIP returns the address to rate-limit on. It walks X-Forwarded-For
+// from the right, the end Google's front end appends to, skipping entries
+// that are trusted proxies. The left end is whatever the client sent and
+// is never trusted. Headers such as Fastly-Client-Ip aren't used either:
+// a request sent straight to Cloud Run can set them to anything.
+func clientIP(r *http.Request, proxies []*net.IPNet) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		first, _, _ := strings.Cut(xff, ",")
-		return strings.TrimSpace(first)
+		parts := strings.Split(xff, ",")
+		for i := len(parts) - 1; i >= 0; i-- {
+			ip := strings.TrimSpace(parts[i])
+			if i == 0 || !trusted(ip, proxies) {
+				return ip
+			}
+		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -207,4 +271,36 @@ func (s *Server) lookupMac(ctx context.Context, id string) (Mac, error) {
 		s.keys.put("mac:"+id, cacheEntry{mac: m, expires: s.now().Add(keyCacheTTL)})
 	}
 	return m, err
+}
+
+// sigCache remembers accepted request signatures for the signing window,
+// so a captured request can't be sent again within it. ECDSA signatures
+// are randomised, so two honest requests never share one. Only signatures
+// that verified are stored, so its size is bounded by honest traffic.
+type sigCache struct {
+	mu    sync.Mutex
+	seen  map[string]time.Time
+	swept time.Time
+}
+
+// firstUse records sig and reports whether it's new.
+func (c *sigCache) firstUse(sig string, now time.Time, window time.Duration) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.seen == nil {
+		c.seen = map[string]time.Time{}
+	}
+	if now.Sub(c.swept) > window {
+		for k, t := range c.seen {
+			if now.Sub(t) > 2*window {
+				delete(c.seen, k)
+			}
+		}
+		c.swept = now
+	}
+	if _, ok := c.seen[sig]; ok {
+		return false
+	}
+	c.seen[sig] = now
+	return true
 }

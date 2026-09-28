@@ -188,6 +188,8 @@ again**, which gives it a new key.
 | `MAILBOX_MONGO_DB` | the database name; defaults to the one in the URI's path |
 | `MAILBOX_SETUP_TOKEN` | registers the first, admin Mac; clear it afterwards |
 | `MAILBOX_DEVICE_IDLE_DAYS` | phone keys unused this long stop working (default 30; `0` never) |
+| `MAILBOX_TRUSTED_PROXIES` | CIDRs of front ends whose `X-Forwarded-For` entry names the client, for per-IP limits (default `66.249.64.0/19`, Firebase Hosting's edge) |
+| `MAILBOX_DEBUG_ERRORS` | `1` returns store errors to callers, for diagnosis; otherwise they get a logged reference |
 | `MAILBOX_WEB_DIR` | serves the phone app; the Docker image sets `/web` |
 
 Health check: `GET /v1/health` returns `ok` once the store is connected,

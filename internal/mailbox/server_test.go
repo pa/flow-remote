@@ -465,3 +465,23 @@ func TestWarmServerRefusesUnknownKeysWithoutTheStore(t *testing.T) {
 		t.Fatalf("known device after a flood: %d", code)
 	}
 }
+
+// A captured signed request can't be sent again inside the signing window.
+func TestSignedRequestReplayIsRefused(t *testing.T) {
+	r := newRig(t)
+	r.pair()
+	req, _ := http.NewRequest("GET", r.srv.URL+"/v1/envelopes", nil)
+	reqsig.Sign(req, r.deviceID, r.sign, nil, r.clk.Now())
+	replay := req.Clone(context.Background())
+	if resp, _ := http.DefaultClient.Do(req); resp.StatusCode != http.StatusOK {
+		t.Fatalf("first use: %d", resp.StatusCode)
+	}
+	resp, _ := http.DefaultClient.Do(replay)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("replay: %d", resp.StatusCode)
+	}
+	// A fresh signature for the same request is fine.
+	if code, _ := r.phone("GET", "/v1/envelopes", nil, true); code != http.StatusOK {
+		t.Fatalf("fresh request: %d", code)
+	}
+}

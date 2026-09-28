@@ -12,6 +12,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -63,6 +64,9 @@ type Server struct {
 	// Like Remote Control's trusted devices and Tailscale's node keys, a
 	// forgotten phone then stops working on its own.
 	DeviceIdle time.Duration
+	// Proxies whose X-Forwarded-For entry names the real client; nil uses
+	// TrustedProxies (Firebase Hosting's edge).
+	Proxies []*net.IPNet
 	// DebugErrors returns store errors to callers instead of a reference.
 	// For diagnosing a deployment whose logs you can't read; off otherwise.
 	DebugErrors bool
@@ -77,6 +81,7 @@ type Server struct {
 	miss        bucket
 	perIP       ipLimiter
 	warm        atomic.Bool // every key is in s.keys
+	sigs        sigCache
 	cleanupMu   sync.Mutex
 	lastCleanup time.Time
 }
@@ -132,7 +137,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/relay/tenants/{id}/remove", s.admin(s.removeTenant))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.perIP.allow(clientIP(r), s.now()) {
+		if !s.perIP.allow(clientIP(r, s.proxies()), s.now()) {
 			s.fail(w, http.StatusTooManyRequests, "too many requests from this address")
 			return
 		}
@@ -142,6 +147,13 @@ func (s *Server) Handler() http.Handler {
 		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) proxies() []*net.IPNet {
+	if s.Proxies != nil {
+		return s.Proxies
+	}
+	return TrustedProxies
 }
 
 func (s *Server) ready() error {
@@ -187,6 +199,10 @@ func (s *Server) device(h handler) http.HandlerFunc {
 			s.fail(w, http.StatusUnauthorized, "unsigned, or signed by an unknown or revoked device")
 			return
 		}
+		if !s.sigs.firstUse(r.Header.Get(reqsig.HeaderSig), s.now(), reqsig.Window) {
+			s.fail(w, http.StatusUnauthorized, "this signed request was already used")
+			return
+		}
 		if s.expired(r.Context(), id) {
 			s.fail(w, http.StatusUnauthorized, "this device's key expired after going unused; pair again")
 			return
@@ -221,6 +237,10 @@ func (s *Server) mac(h handler) http.HandlerFunc {
 		}
 		if err != nil {
 			s.fail(w, http.StatusUnauthorized, "unsigned, or signed by an unknown Mac")
+			return
+		}
+		if !s.sigs.firstUse(r.Header.Get(reqsig.HeaderSig), s.now(), reqsig.Window) {
+			s.fail(w, http.StatusUnauthorized, "this signed request was already used")
 			return
 		}
 		s.Store.Touch(r.Context(), "mac:"+id, s.now())

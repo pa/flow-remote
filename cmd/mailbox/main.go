@@ -14,6 +14,8 @@
 //	                      database id there)
 //	MAILBOX_DEVICE_IDLE_DAYS  expire phone keys unused this long (default 30, 0 = never)
 //	MAILBOX_DEBUG_ERRORS=1    return store errors to callers (default: a reference)
+//	MAILBOX_TRUSTED_PROXIES   CIDRs of front ends whose X-Forwarded-For entry
+//	                          names the client (default: Firebase Hosting's edge)
 //	MAILBOX_WEB_DIR       also serve the phone app from this directory.
 //	                      Firebase Hosting only forwards to Cloud Run, so
 //	                      on GCP the image bakes the app in at /web.
@@ -75,6 +77,13 @@ func run(log *slog.Logger) error {
 	}
 	s := &mailbox.Server{Store: store, Ready: store.Ready, SetupToken: os.Getenv("MAILBOX_SETUP_TOKEN"), Log: log,
 		DeviceIdle: time.Duration(idle) * 24 * time.Hour, DebugErrors: os.Getenv("MAILBOX_DEBUG_ERRORS") == "1"}
+	if v := os.Getenv("MAILBOX_TRUSTED_PROXIES"); v != "" {
+		p, err := mailbox.ParseTrustedProxies(v)
+		if err != nil {
+			return fmt.Errorf("MAILBOX_TRUSTED_PROXIES: %w", err)
+		}
+		s.Proxies = p
+	}
 	go func() {
 		store.Connect(ctx, openStore, func(err error) { log.Warn("store connect", "err", err) })
 		// Load every key, so made-up key ids cost no database work.
