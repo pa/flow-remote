@@ -1,0 +1,5 @@
+/bin/
+*.tmp
+.DS_Store
+.skoop/local/
+node_modules/
