@@ -128,7 +128,11 @@ func openStore(ctx context.Context) (mailbox.Store, error) {
 		if name == "" {
 			name = "flowremote"
 		}
-		return mailbox.OpenMongo(ctx, uri, name)
+		m, err := mailbox.OpenMongo(ctx, uri, name)
+		if err == nil && m.IndexErr != nil {
+			slog.Warn("indexes not created; queries run without them", "err", m.IndexErr)
+		}
+		return m, err
 	default:
 		return nil, fmt.Errorf("MAILBOX_STORE=%q: want memory or mongo", kind)
 	}

@@ -23,6 +23,9 @@ const touchEvery = 20 * time.Second
 type Mongo struct {
 	envs, pairs, macs, devices, presence *mongo.Collection
 
+	// IndexErr is why index creation failed, if it did. Not fatal.
+	IndexErr error
+
 	mu      sync.Mutex
 	touched map[string]time.Time // last presence write per key
 	seen    map[string]time.Time // latest presence per key, written or not
@@ -76,12 +79,14 @@ func OpenMongo(ctx context.Context, uri, dbName string) (*Mongo, error) {
 		macs: db.Collection("macs"), devices: db.Collection("devices"), presence: db.Collection("presence"),
 		touched: map[string]time.Time{}, seen: map[string]time.Time{},
 	}
-	_, err = m.envs.Indexes().CreateMany(ctx, []mongo.IndexModel{
+	// Best effort. Creating indexes needs an index-admin role the service
+	// shouldn't hold for a handful of small collections, and Firestore's
+	// Enterprise edition runs these queries without an index anyway.
+	if _, err := m.envs.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "to", Value: 1}, {Key: "seq", Value: 1}}},
 		{Keys: bson.D{{Key: "expires_at", Value: 1}}},
-	})
-	if err != nil {
-		return nil, err
+	}); err != nil {
+		m.IndexErr = err
 	}
 	return m, nil
 }
