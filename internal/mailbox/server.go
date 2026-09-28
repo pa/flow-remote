@@ -44,8 +44,11 @@ type Server struct {
 	Store Store
 	// SetupToken lets a Mac register its key. Empty disables registration.
 	SetupToken string
-	Now        func() time.Time
-	Log        *slog.Logger
+	// Ready, if set, gates the API: until it returns nil every call gets
+	// 503, and /healthz says why.
+	Ready func() error
+	Now   func() time.Time
+	Log   *slog.Logger
 
 	limits      limiter
 	cleanupMu   sync.Mutex
@@ -61,7 +64,13 @@ func (s *Server) now() time.Time {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		if err := s.ready(); err != nil {
+			s.fail(w, http.StatusServiceUnavailable, "store not ready: "+err.Error())
+			return
+		}
+		w.Write([]byte("ok"))
+	})
 
 	mux.HandleFunc("POST /v1/macs", s.registerMac)
 
@@ -81,7 +90,20 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/relay/envelopes", s.mac(s.relayList))
 	mux.HandleFunc("POST /v1/relay/envelopes", s.mac(s.relayPost))
 	mux.HandleFunc("POST /v1/relay/ack", s.mac(s.relayAck))
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/healthz" && s.ready() != nil {
+			s.fail(w, http.StatusServiceUnavailable, "the mailbox is starting; try again shortly")
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) ready() error {
+	if s.Ready == nil {
+		return nil
+	}
+	return s.Ready()
 }
 
 // ---- auth ----
@@ -403,6 +425,8 @@ func (s *Server) storeErr(w http.ResponseWriter, err error) {
 		s.fail(w, http.StatusConflict, "that id is registered with a different key, or revoked")
 	case errors.Is(err, ErrNotFound):
 		s.fail(w, http.StatusNotFound, "not found")
+	case errors.Is(err, ErrUnavailable):
+		s.fail(w, http.StatusServiceUnavailable, "the mailbox is starting; try again shortly")
 	default:
 		if s.Log != nil {
 			s.Log.Error("store", "err", err)

@@ -41,17 +41,22 @@ func run(log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	store, err := openStore(ctx)
-	if err != nil {
-		return err
-	}
 	if len(os.Args) > 1 && os.Args[1] == "cleanup" {
+		store, err := openStore(ctx)
+		if err != nil {
+			return err
+		}
 		n, err := store.DeleteExpired(ctx, time.Now())
 		log.Info("cleanup", "deleted", n)
 		return err
 	}
 
-	s := &mailbox.Server{Store: store, SetupToken: os.Getenv("MAILBOX_SETUP_TOKEN"), Log: log}
+	// Connect in the background: Cloud Run replaces a container that
+	// doesn't listen on $PORT within its startup window, so a slow or
+	// failing first database connection must not stop the server starting.
+	store := &mailbox.Deferred{}
+	go store.Connect(ctx, openStore, func(err error) { log.Warn("store connect", "err", err) })
+	s := &mailbox.Server{Store: store, Ready: store.Ready, SetupToken: os.Getenv("MAILBOX_SETUP_TOKEN"), Log: log}
 	if s.SetupToken != "" && len(s.SetupToken) < 24 {
 		return errors.New("MAILBOX_SETUP_TOKEN must be at least 24 characters")
 	}
