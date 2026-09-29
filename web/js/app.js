@@ -280,7 +280,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v36";
+const BUILD = "v38";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -794,15 +794,30 @@ function macOffline(p) {
   return seen === null || Date.now() - seen.getTime() > ONLINE_MS;
 }
 
+// unreachableLine says why a computer can't be reached, as far as the
+// phone can tell from how the request failed.
+function unreachableLine(p) {
+  const host = new URL(p.mailbox || location.origin).hostname;
+  const wait = " Messages wait here and go when it's back.";
+  switch (state.unreachable[p.mac_id]) {
+    case "phone-offline":
+      return "This phone is offline." + wait;
+    case "unresolved":
+      return host.endsWith(".ts.net")
+        ? "Can't find this computer. Is Tailscale on? Open the Tailscale app and connect." + wait
+        : "Can't reach this computer's address. Check the tunnel, or that flow-remote is running." + wait;
+    default:
+      return "This computer isn't answering. It may be asleep, or flow-remote isn't running." + wait;
+  }
+}
+
 function macLine(p) {
   if (p.rejected) {
     return h("span", { class: "status warn" }, "This computer revoked this phone. ",
       h("button", { class: "inline", onclick: () => go("welcome") }, "Pair again"),
       " to reconnect with a new key; your messages stay.");
   }
-  if (state.unreachable[p.mac_id]) {
-    return h("span", { class: "status warn" }, "Can't reach this computer. It may be asleep, or this phone is offline. Messages wait here and go when it's back.");
-  }
+  if (state.unreachable[p.mac_id]) return h("span", { class: "status warn" }, unreachableLine(p));
   const s = state.macSeen[p.mac_id];
   if (s === undefined) return h("span", { class: "status" }, "Checking the computer…");
   if (s === null) return h("span", { class: "status warn" }, "The computer hasn't checked in yet. Is `flow-remote start` running?");
@@ -1300,7 +1315,7 @@ async function pollPairing(p, withStatus) {
       state.macSeen[p.mac_id] = seen ? new Date(seen) : null;
     }
     p.rejected = false;
-    const back = state.unreachable[p.mac_id] === true;
+    const back = Boolean(state.unreachable[p.mac_id]);
     state.unreachable[p.mac_id] = false;
     // The Mac serves the app too, so a build published while it was
     // unreachable can only be fetched now.
@@ -1313,9 +1328,13 @@ async function pollPairing(p, withStatus) {
     if (e.status === 401 && p.confirmed) p.rejected = true;
     // A Mac that serves the phone itself can't be reached while it's
     // asleep: show it offline straight away.
-    if (api.offline(e) && p.confirmed && !state.unreachable[p.mac_id]) {
-      state.unreachable[p.mac_id] = true;
-      return true; // redraw now, not on the next status check
+    if (api.offline(e) && p.confirmed) {
+      // Why, as best the phone can tell: see unreachableLine.
+      const why = navigator.onLine === false ? "phone-offline" : api.netKind(e);
+      if (state.unreachable[p.mac_id] !== why) {
+        state.unreachable[p.mac_id] = why;
+        return true; // redraw now, not on the next status check
+      }
     }
     return false;
   }
@@ -1360,6 +1379,14 @@ window.addEventListener("hashchange", () => {
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) stopPolling();
   else startPolling();
+});
+
+// When the phone's own connection comes or goes, look again straight away
+// rather than on the next poll.
+window.addEventListener("online", () => { stopPolling(); startPolling(); });
+window.addEventListener("offline", () => {
+  for (const p of state.pairings) if (p.confirmed) state.unreachable[p.mac_id] = "phone-offline";
+  backgroundRender();
 });
 
 // ---- updates ----

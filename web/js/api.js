@@ -13,7 +13,19 @@ import { b64u } from "./envelope.js";
 
 const subtle = globalThis.crypto.subtle;
 const TIMEOUT_MS = 10_000;
+const QUICK_MS = 2_500; // under this, a failure never reached a computer
 const enc = new TextEncoder();
+
+// NetError is a request that got no answer at all. kind is a guess from
+// how it failed: "unresolved" came back at once, which is what a name
+// that can't be looked up does (a .ts.net address with Tailscale off);
+// "timeout" waited and heard nothing (Tailscale on, computer down).
+export class NetError extends Error {
+  constructor(kind) {
+    super(kind === "timeout" ? "no answer" : "can't reach the address");
+    this.kind = kind;
+  }
+}
 
 export class ApiError extends Error {
   constructor(status, message) {
@@ -41,7 +53,14 @@ async function call(signer, method, path, body, base = signer?.base ?? "") {
   if (signer) Object.assign(headers, await signHeaders(method, path, raw, signer.id, signer.key));
   // A Mac that's asleep or off the tailnet may not answer at all; give up
   // so the app can say it's unreachable instead of waiting.
-  const res = await fetch(base + path, { method, headers, body: body ? raw : undefined, cache: "no-store", signal: AbortSignal.timeout(TIMEOUT_MS) });
+  const started = performance.now();
+  let res;
+  try {
+    res = await fetch(base + path, { method, headers, body: body ? raw : undefined, cache: "no-store", signal: AbortSignal.timeout(TIMEOUT_MS) });
+  } catch (e) {
+    const quick = performance.now() - started < QUICK_MS;
+    throw new NetError(e?.name !== "TimeoutError" && quick ? "unresolved" : "timeout");
+  }
   if (!res.ok) {
     let msg = `${res.status}`;
     try { msg = (await res.json()).error || msg; } catch {}
@@ -64,6 +83,7 @@ export function mailboxBase(offer) {
 // offline says whether err means the Mac couldn't be reached at all, as
 // opposed to answering with an error.
 export const offline = (err) => !(err instanceof ApiError);
+export const netKind = (err) => (err instanceof NetError ? err.kind : "timeout");
 
 export const postPair = (base, pairId, env) => call(null, "POST", `/v1/pair/${encodeURIComponent(pairId)}`, env, base);
 export const postEnvelope = (signer, env) => call(signer, "POST", "/v1/envelopes", env);
