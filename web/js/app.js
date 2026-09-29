@@ -191,10 +191,25 @@ function go(view, extra = {}, { fromHistory = false } = {}) {
   const wasDeep = isDeep(state.view);
   Object.assign(state, { view, error: "" }, extra);
   if (!fromHistory) {
-    if (isDeep(view) && !wasDeep) history.pushState({ fr: view }, "");
-    else if (isDeep(view)) history.replaceState({ fr: view }, "");
+    // The entry also says which thread, so a reload can come back to it.
+    const entry = { fr: view, task: view === "thread" ? state.task : undefined, mac: state.active };
+    if (isDeep(view) && !wasDeep) history.pushState(entry, "");
+    else if (isDeep(view)) history.replaceState(entry, "");
   }
   render();
+}
+
+// restoreView reopens the screen a reload left: the browser keeps the
+// history entry's state across a reload, not the app's memory. A fresh
+// start from the home screen has none, so it opens the list as before.
+function restoreView() {
+  const saved = history.state;
+  if (!saved?.fr) return;
+  if (saved.mac && state.pairings.some((p) => p.mac_id === saved.mac)) state.active = saved.mac;
+  if (saved.fr === "settings") state.view = "settings";
+  else if (saved.fr === "thread" && saved.task) Object.assign(state, { view: "thread", task: saved.task });
+  // Anything else (the camera, the pairing guide) starts over.
+  else history.replaceState(null, "");
 }
 
 // goBack is what every back button does.
@@ -265,7 +280,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v35";
+const BUILD = "v36";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -1413,6 +1428,7 @@ async function boot() {
   await loadState();
   if (offer && !state.pairings.some((p) => p.mac_id === offer.mac_id && !p.rejected)) state.offer = offer;
   if (!current()) state.view = "welcome";
+  else if (!state.offer) restoreView();
   db.pruneSeen(Date.now() - SEEN_TTL).catch(() => {});
   render();
   startPolling();
