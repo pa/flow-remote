@@ -46,7 +46,7 @@ func (f *fakeFlow) Message(_ context.Context, slug, body, replyTo string) (strin
 	return "abc123", nil
 }
 
-func (f *fakeFlow) Unread(context.Context) ([]flowcli.Mail, error) {
+func (f *fakeFlow) Inbox(context.Context) ([]flowcli.Mail, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]flowcli.Mail(nil), f.unread...), nil
@@ -310,6 +310,32 @@ func TestMailForwardedOnceAndReplyMarksRead(t *testing.T) {
 	}
 	if !strings.HasSuffix(r.flow.sent[0], "|m1") {
 		t.Fatalf("reply-to not passed: %q", r.flow.sent[0])
+	}
+}
+
+// Something else reading the human's queue (a dispatch session's `flow
+// inbox pop`) marks a reply read before the relay looks. It must still
+// reach the phone; mail read before the relay began keeping track mustn't.
+func TestReplyReadElsewhereStillForwarded(t *testing.T) {
+	r := newRig(t)
+	from := flowcli.Address{Assignee: "user", TaskSlug: "floci-local-apply"}
+	r.flow.unread = []flowcli.Mail{
+		{ID: "old1", Kind: "message", From: from, Body: "read before the relay ran", Mail: "read", CreatedAt: r.now.Add(-time.Hour)},
+	}
+	r.tick() // starts keeping track
+	r.now = r.now.Add(10 * time.Second)
+	r.flow.mu.Lock()
+	r.flow.unread = append(r.flow.unread,
+		flowcli.Mail{ID: "new1", Kind: "message", From: from, Body: "stats of what?", Mail: "read", CreatedAt: r.now},
+		flowcli.Mail{ID: "new2", Kind: "message", From: from, Body: "build 26A428", Mail: "unread", CreatedAt: r.now})
+	r.flow.mu.Unlock()
+	r.tick()
+	got := map[string]bool{}
+	for _, m := range byKind(r.inbox(), protocol.KindMail) {
+		got[m.Mail.FlowID] = true
+	}
+	if !got["new1"] || !got["new2"] || got["old1"] {
+		t.Fatalf("forwarded %v; want new1 and new2, not old1", got)
 	}
 }
 

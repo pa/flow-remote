@@ -285,12 +285,21 @@ func (r *Relay) syncSessions(ctx context.Context, force bool) error {
 }
 
 func (r *Relay) forwardMail(ctx context.Context) error {
-	mail, err := r.Flow.Unread(ctx)
+	mail, err := r.Flow.Inbox(ctx)
+	if err != nil {
+		return err
+	}
+	since, err := r.State.Since(r.now())
 	if err != nil {
 		return err
 	}
 	for _, m := range mail {
 		if m.From.TaskSlug == "" || r.State.Forwarded(m.ID) || r.now().Sub(m.CreatedAt) > mailHorizon {
+			continue
+		}
+		// Mail read before this relay started keeping track isn't news. After
+		// that, read or not, it goes: something else may have read it first.
+		if m.Mail == "read" && m.CreatedAt.Before(since) {
 			continue
 		}
 		msg := protocol.Msg{Kind: protocol.KindMail, Mail: &protocol.Mail{
@@ -390,6 +399,20 @@ func LoadState(path string) (*State, error) {
 	return s, nil
 }
 
+// sinceKey holds when this state was started, alongside the forwarded ids.
+const sinceKey = "_since"
+
+// Since is when this relay started keeping track, set on first use.
+func (s *State) Since(now time.Time) (time.Time, error) {
+	s.mu.Lock()
+	f, ok := s.forwarded[sinceKey]
+	s.mu.Unlock()
+	if ok {
+		return f.At, nil
+	}
+	return now, s.mark(sinceKey, "", now)
+}
+
 func (s *State) Forwarded(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -405,11 +428,15 @@ func (s *State) ForwardedFrom(id string) string {
 }
 
 func (s *State) MarkForwarded(id, task string, now time.Time) error {
+	return s.mark(id, task, now)
+}
+
+func (s *State) mark(id, task string, now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.forwarded[id] = forward{At: now, Task: task}
 	for k, f := range s.forwarded {
-		if now.Sub(f.At) > 2*mailHorizon {
+		if k != sinceKey && now.Sub(f.At) > 2*mailHorizon {
 			delete(s.forwarded, k)
 		}
 	}

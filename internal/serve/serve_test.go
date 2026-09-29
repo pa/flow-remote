@@ -49,7 +49,7 @@ func (f *fakeFlow) Message(_ context.Context, slug, body, _ string) (string, err
 	return "flow-1", nil
 }
 
-func (f *fakeFlow) Unread(context.Context) ([]flowcli.Mail, error) {
+func (f *fakeFlow) Inbox(context.Context) ([]flowcli.Mail, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]flowcli.Mail(nil), f.unread...), nil

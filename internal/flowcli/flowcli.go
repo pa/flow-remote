@@ -48,8 +48,8 @@ type Flow interface {
 	LiveTasks(ctx context.Context) ([]Task, error)
 	// Message sends body to a task's session and returns flow's message id.
 	Message(ctx context.Context, slug, body, replyTo string) (string, error)
-	// Unread lists the human's unread mail without consuming it.
-	Unread(ctx context.Context) ([]Mail, error)
+	// Inbox lists the human's mail, read or not, without consuming it.
+	Inbox(ctx context.Context) ([]Mail, error)
 	// MarkRead acks one message in the human's queue.
 	MarkRead(ctx context.Context, id string) error
 }
@@ -141,8 +141,11 @@ func (c CLI) Message(ctx context.Context, slug, body, replyTo string) (string, e
 	return string(m[1]), nil
 }
 
-func (c CLI) Unread(ctx context.Context) ([]Mail, error) {
-	out, err := c.run(ctx, "inbox", "--as", "user", "--json")
+// Inbox includes mail already read: anything else reading the human's
+// queue (a dispatch session's `flow inbox pop`, say) marks it read, and a
+// session's reply must still reach the phone.
+func (c CLI) Inbox(ctx context.Context) ([]Mail, error) {
+	out, err := c.run(ctx, "inbox", "--as", "user", "--all", "--json")
 	if err != nil {
 		return nil, err
 	}
