@@ -31,8 +31,9 @@ If you lose a phone, revoke it straight away (see
 [If you lose a phone](#if-you-lose-a-phone)).
 
 Details: [docs/DESIGN.md](docs/DESIGN.md) covers the architecture and the
-decisions behind it, and [docs/PROTOCOL.md](docs/PROTOCOL.md) the byte
-formats.
+decisions behind it, [docs/PROTOCOL.md](docs/PROTOCOL.md) the byte
+formats, and [docs/ROADMAP.md](docs/ROADMAP.md) other ways to reach the
+computer and what's still open.
 
 ## 1. Install
 
