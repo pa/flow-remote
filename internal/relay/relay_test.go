@@ -93,7 +93,7 @@ func newRig(t *testing.T) *rig {
 		EnrolledAt: r.now,
 	}
 	devs.Enroll(r.device)
-	store.RegisterMac(context.Background(), mailbox.Mac{ID: mac.ID, SignPub: mac.SignPub(), Admin: true, Created: r.now})
+	store.RegisterMac(context.Background(), mailbox.Mac{ID: mac.ID, SignPub: mac.SignPub(), Created: r.now})
 	store.PutDevice(context.Background(), mac.ID, r.device.ID, r.device.SignPub)
 
 	r.flow = &fakeFlow{tasks: []flowcli.Task{

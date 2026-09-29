@@ -37,13 +37,10 @@ jobs:
             tar -C dist -czf "dist/$dir.tar.gz" "$dir"
             rm -rf "dist/$dir"
           }
-          # flow-remote runs on the Mac (Keychain, launchd).
+          # flow-remote runs on the Mac (Keychain, launchd). install.sh and
+          # `flow-remote upgrade` expect these names and checksums.txt.
           build flow-remote darwin arm64
           build flow-remote darwin amd64
-          # The mailbox is a Linux container; the Dockerfile is the usual
-          # way to run it, but the binary is here for other hosts.
-          build mailbox linux amd64
-          build mailbox linux arm64
           (cd dist && sha256sum *.tar.gz > checksums.txt)
           ls -la dist
       - name: Publish

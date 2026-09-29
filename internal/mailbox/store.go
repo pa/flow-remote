@@ -1,11 +1,10 @@
-// Package mailbox is the Cloud Run service between phones and Macs. It
-// stores sealed envelopes until the recipient acks them or they expire. It
-// can't read them, and it doesn't need to trust anything inside them.
+// Package mailbox holds sealed envelopes between phones and the computer
+// until the recipient acks them or they expire. It can't read them, and it
+// doesn't need to trust anything inside them. `flow-remote run` serves it
+// (see internal/serve), with the computer as its one tenant.
 //
-// Each Mac is a tenant, identified by its key, the way an account is a key
-// pair in Happier. A phone belongs to the Mac that enrolled it and can only
-// reach that Mac; a Mac can only manage its own phones. Your other Macs and
-// other people's Macs are separate by construction.
+// A phone belongs to the computer that enrolled it: it can only send to that
+// computer and read its own queue.
 package mailbox
 
 import (
@@ -21,7 +20,6 @@ import (
 const (
 	Retention = envelope.Retention
 	PairTTL   = 2 * time.Minute
-	InviteTTL = 24 * time.Hour
 )
 
 var (
@@ -43,7 +41,6 @@ type Record struct {
 type Mac struct {
 	ID      string    `json:"id"`
 	SignPub string    `json:"-"`
-	Admin   bool      `json:"admin"` // may create invites and remove tenants
 	Created time.Time `json:"created"`
 }
 
@@ -75,13 +72,6 @@ type Store interface {
 	RegisterMac(ctx context.Context, m Mac) error
 	GetMac(ctx context.Context, macID string) (Mac, error)
 	ListMacs(ctx context.Context) ([]Mac, error)
-	// RemoveMac deletes a tenant: the Mac, its devices, and their queues.
-	RemoveMac(ctx context.Context, macID string) error
-
-	// CreateInvite stores an invite by the hash of its code.
-	CreateInvite(ctx context.Context, hash, createdBy string, now time.Time) error
-	// UseInvite consumes an unexpired invite; ErrNotFound otherwise.
-	UseInvite(ctx context.Context, hash string, now time.Time) error
 
 	// PutDevice registers a phone for owner; ErrConflict if the id is known
 	// with another key or owner, or is revoked.
@@ -98,20 +88,19 @@ type Store interface {
 	Touch(ctx context.Context, who string, now time.Time) error
 	LastSeen(ctx context.Context, who string) (time.Time, error)
 
-	// DeleteExpired removes envelopes, pairings and invites past expiry.
+	// DeleteExpired removes envelopes and pairings past expiry.
 	DeleteExpired(ctx context.Context, now time.Time) (int, error)
 }
 
 // Memory is a Store for local runs and tests.
 type Memory struct {
-	mu      sync.Mutex
-	seq     int64
-	envs    map[string]Record // by envelope id
-	pairs   map[string]pairSlot
-	macs    map[string]Mac
-	devs    map[string]device
-	invites map[string]time.Time // hash -> expiry
-	seen    map[string]time.Time
+	mu    sync.Mutex
+	seq   int64
+	envs  map[string]Record // by envelope id
+	pairs map[string]pairSlot
+	macs  map[string]Mac
+	devs  map[string]device
+	seen  map[string]time.Time
 }
 
 type pairSlot struct {
@@ -128,7 +117,7 @@ type device struct {
 func NewMemory() *Memory {
 	return &Memory{
 		envs: map[string]Record{}, pairs: map[string]pairSlot{}, macs: map[string]Mac{},
-		devs: map[string]device{}, invites: map[string]time.Time{}, seen: map[string]time.Time{},
+		devs: map[string]device{}, seen: map[string]time.Time{},
 	}
 }
 
@@ -252,56 +241,6 @@ func (m *Memory) ListMacs(_ context.Context) ([]Mac, error) {
 	return out, nil
 }
 
-func (m *Memory) RemoveMac(_ context.Context, macID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.macs[macID]; !ok {
-		return ErrNotFound
-	}
-	delete(m.macs, macID)
-	gone := map[string]bool{macID: true}
-	for id, d := range m.devs {
-		if d.owner == macID {
-			gone[id] = true
-			// Keep the id, revoked, so it can't be re-registered.
-			d.revoked = true
-			m.devs[id] = d
-		}
-	}
-	for id, r := range m.envs {
-		if gone[r.To] {
-			delete(m.envs, id)
-		}
-	}
-	for id, s := range m.pairs {
-		if s.owner == macID {
-			delete(m.pairs, id)
-		}
-	}
-	return nil
-}
-
-func (m *Memory) CreateInvite(_ context.Context, hash, _ string, now time.Time) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.invites[hash]; ok {
-		return ErrExists
-	}
-	m.invites[hash] = now.Add(InviteTTL)
-	return nil
-}
-
-func (m *Memory) UseInvite(_ context.Context, hash string, now time.Time) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	exp, ok := m.invites[hash]
-	if !ok || !now.Before(exp) {
-		return ErrNotFound
-	}
-	delete(m.invites, hash)
-	return nil
-}
-
 func (m *Memory) PutDevice(_ context.Context, owner, deviceID, signPub string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -376,12 +315,6 @@ func (m *Memory) DeleteExpired(_ context.Context, now time.Time) (int, error) {
 	for id, r := range m.pairs {
 		if !now.Before(r.expiresAt) {
 			delete(m.pairs, id)
-			n++
-		}
-	}
-	for h, exp := range m.invites {
-		if !now.Before(exp) {
-			delete(m.invites, h)
 			n++
 		}
 	}

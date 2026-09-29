@@ -1,3 +1,0 @@
-{$DOMAIN} {
-	reverse_proxy mailbox:8080
-}

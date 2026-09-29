@@ -26,8 +26,6 @@ import (
 	"github.com/pa/flow-remote/internal/reqsig"
 )
 
-const setupToken = "test-setup-token-0123456789"
-
 type clock struct {
 	mu sync.Mutex
 	t  time.Time
@@ -56,7 +54,7 @@ type rig struct {
 func newRig(t *testing.T) *rig {
 	clk := &clock{t: time.Now()}
 	store := mailbox.NewMemory()
-	s := &mailbox.Server{Store: store, SetupToken: setupToken, Now: clk.Now, DeviceIdle: 30 * 24 * time.Hour}
+	s := &mailbox.Server{Store: store, Now: clk.Now, DeviceIdle: 30 * 24 * time.Hour}
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 	mac, _ := identity.LoadOrCreateMac(&keystore.Memory{})
@@ -108,7 +106,8 @@ func (r *rig) enrollment(o pairing.Offer) *envelope.Envelope {
 func (r *rig) pair() {
 	r.t.Helper()
 	ctx := context.Background()
-	if err := r.relay.Register(ctx, setupToken, ""); err != nil {
+	// The computer is registered in the store directly, as serve does.
+	if err := r.store.RegisterMac(ctx, mailbox.Mac{ID: r.mac.ID, SignPub: r.mac.SignPub(), Created: r.clk.Now()}); err != nil {
 		r.t.Fatalf("register: %v", err)
 	}
 	o := pairing.NewOffer(r.mac, "", r.clk.Now())
@@ -262,42 +261,6 @@ func TestRevokedDeviceIsRejected(t *testing.T) {
 	}
 }
 
-func TestRegistration(t *testing.T) {
-	r := newRig(t)
-	ctx := context.Background()
-	if err := r.relay.Register(ctx, "wrong-token-wrong-token-xx", ""); err == nil {
-		t.Fatal("wrong token accepted")
-	}
-	// The right token, but the request is signed by a different key than
-	// the one in the body.
-	other, _ := identity.LoadOrCreateMac(&keystore.Memory{})
-	body, _ := json.Marshal(map[string]string{"mac_id": r.mac.ID, "sign_pub": r.mac.SignPub()})
-	req, _ := http.NewRequest("POST", r.srv.URL+"/v1/macs", bytes.NewReader(body))
-	req.Header.Set(mailbox.HeaderSetup, setupToken)
-	reqsig.Sign(req, r.mac.ID, other.Sign, body, r.clk.Now())
-	if resp, _ := http.DefaultClient.Do(req); resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("registration signed by another key = %d", resp.StatusCode)
-	}
-	if err := r.relay.Register(ctx, setupToken, ""); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.relay.Register(ctx, setupToken, ""); err != nil {
-		t.Fatalf("re-registering the same key: %v", err)
-	}
-	// Another key can't take over the same mac id.
-	other.ID = r.mac.ID
-	if err := (&client.Client{BaseURL: r.srv.URL, Mac: other, Now: r.clk.Now}).Register(ctx, setupToken, ""); err == nil {
-		t.Fatal("mac id taken over")
-	}
-
-	// A mailbox with no token accepts no registrations at all.
-	closed := httptest.NewServer((&mailbox.Server{Store: mailbox.NewMemory()}).Handler())
-	defer closed.Close()
-	if err := (&client.Client{BaseURL: closed.URL, Mac: r.mac}).Register(ctx, "", ""); err == nil {
-		t.Fatal("registration with no token configured")
-	}
-}
-
 func TestPhoneRateLimit(t *testing.T) {
 	r := newRig(t)
 	r.pair()
@@ -443,11 +406,11 @@ func TestPerMacCaps(t *testing.T) {
 func TestWarmServerRefusesUnknownKeysWithoutTheStore(t *testing.T) {
 	store := mailbox.NewMemory()
 	clk := &clock{t: time.Now()}
-	s := &mailbox.Server{Store: store, SetupToken: setupToken, Now: clk.Now}
+	s := &mailbox.Server{Store: store, Now: clk.Now}
 	srv := httptest.NewServer(s.Handler())
 	defer srv.Close()
 	mac, _ := identity.LoadOrCreateMac(&keystore.Memory{})
-	store.RegisterMac(context.Background(), mailbox.Mac{ID: mac.ID, SignPub: mac.SignPub(), Admin: true, Created: clk.Now()})
+	store.RegisterMac(context.Background(), mailbox.Mac{ID: mac.ID, SignPub: mac.SignPub(), Created: clk.Now()})
 	sign, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	store.PutDevice(context.Background(), mac.ID, "dev-known00000", envelope.EncodeSignPub(&sign.PublicKey))
 	if err := s.Warm(context.Background()); err != nil {

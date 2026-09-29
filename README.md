@@ -41,25 +41,24 @@ You need [flow](https://github.com/Facets-cloud/flow) on the computer.
 flow-remote runs on macOS today. Linux needs a key store and a systemd
 service, which aren't done yet.
 
-**From a release** (Apple Silicon shown; use `darwin_amd64` on an Intel Mac):
-
 ```bash
-V=v0.1.0   # the release you want: https://github.com/pa/flow-remote/releases
-# While the repo is private, download with gh (signed in with access):
-gh release download "$V" -R pa/flow-remote -p "flow-remote_${V}_darwin_arm64.tar.gz" -p checksums.txt
-# Once it's public, curl works too:
-# curl -fLO "https://github.com/pa/flow-remote/releases/download/$V/flow-remote_${V}_darwin_arm64.tar.gz"
-
-shasum -a 256 -c checksums.txt --ignore-missing   # check the download
-tar -xzf "flow-remote_${V}_darwin_arm64.tar.gz"
-install -m 755 "flow-remote_${V}_darwin_arm64/flow-remote" ~/.local/bin/   # any directory on your PATH
-flow-remote version
+curl -fsSL https://raw.githubusercontent.com/pa/flow-remote/main/install.sh | sh
 ```
 
-The binary isn't notarized. If you downloaded it with a browser and macOS
-blocks it, clear the quarantine flag:
-`xattr -d com.apple.quarantine ~/.local/bin/flow-remote`. Downloads made
-with `gh` or `curl` aren't quarantined.
+The script downloads the latest release for your Mac's chip, checks it
+against the release's `checksums.txt`, and installs `flow-remote` to
+`~/.local/bin`. Set `FLOW_REMOTE_INSTALL_DIR` for somewhere else, or
+`FLOW_REMOTE_VERSION=v0.2.0` for a particular release. While the
+repository is private, sign in to the GitHub CLI first (`gh auth login`,
+with an account that can see it) and run the script from a clone:
+`sh install.sh`. It downloads with `gh`.
+
+To upgrade later:
+
+```bash
+flow-remote upgrade           # installs the latest release in place and restarts the background service
+flow-remote upgrade --check   # only says whether there's a newer one
+```
 
 **From source** (needs Go 1.26):
 
@@ -90,7 +89,9 @@ computer in the next step shouldn't say anything sensitive.
 flow-remote setup --name "Work laptop"
 ```
 
-Paste the auth key when asked. Input is hidden, and the key isn't saved.
+If this computer hasn't joined yet, setup first walks you through the
+three admin-console settings from step 2, one at a time. Paste the auth key
+when asked. Input is hidden, and the key isn't saved.
 Setup joins your tailnet as a device called `flow-remote-work-laptop`,
 fetches its HTTPS certificate, and prints the address phones will use,
 like `https://flow-remote-work-laptop.<tailnet>.ts.net`. The name is part
@@ -192,12 +193,11 @@ The computer refuses that key from then on. A phone that's gone unused for
 | Command | What it does |
 | --- | --- |
 | `setup [--name N] [--app URL]` | join your tailnet and serve phones from this computer (the default, `--tunnel tailscale`) |
-| `setup --mailbox URL [--name N]` | use a hosted mailbox instead (see below) |
 | `start` / `stop` / `status` | run in the background as a launchd agent, stop it, check it |
 | `run` | run in the foreground |
 | `pair [--png FILE]` | show a QR code and enroll a phone |
 | `devices [--all]` / `revoke <device-id>` | list this computer's phones with when each last checked in (`--all` adds revoked ones), or cut one off |
-| `invite`, `tenants`, `remove-tenant <mac-id>` | hosted mailbox only: an admin's invites and tenants |
+| `upgrade [--check]` | install the latest release in place, and restart the background service |
 | `version` | print the version |
 
 ## What's in ~/.flow-remote
@@ -211,49 +211,13 @@ The computer refuses that key from then on. A phone that's gone unused for
 | `seen.json`, `forwarded.json` | the replay guard, and which session mail went to the phone |
 | `audit.log`, `relay.log` | what was delivered, refused or forwarded (never message text), and the service's log |
 
-## Without Tailscale: a hosted mailbox
-
-If a phone can't run Tailscale (iOS allows one VPN at a time), a hosted
-mailbox can carry sealed envelopes between the phone and the computer
-instead, and `flow-remote` polls it. The mailbox serves the phone app's
-code, so whoever runs it could change that code. Run your own.
-
-- [deploy/skoop](deploy/skoop): Cloud Run and Firestore on GCP, with a
-  custom domain.
-- [deploy/docker](deploy/docker): Docker Compose with MongoDB and Caddy on
-  any machine.
-
-The first computer registers with the mailbox's setup token and becomes
-its admin. Others join with `flow-remote invite`:
-
-```bash
-FLOW_REMOTE_SETUP_TOKEN=<token> flow-remote setup --mailbox https://flow.example.com --name "Work laptop"
-FLOW_REMOTE_INVITE=<code> flow-remote setup --mailbox https://flow.example.com --name "Home desktop"   # on another computer
-```
-
-Clear `MAILBOX_SETUP_TOKEN` once the first computer is set up.
-
-| Mailbox variable | Meaning |
-| --- | --- |
-| `PORT` | where to listen (default 8080) |
-| `MAILBOX_STORE` | `mongo` in production; `memory` for local runs (refused on Cloud Run) |
-| `MAILBOX_MONGO_URI` | a MongoDB connection string (Firestore's MongoDB mode works) |
-| `MAILBOX_MONGO_DB` | the database name; defaults to the one in the URI's path |
-| `MAILBOX_SETUP_TOKEN` | registers the first, admin computer; clear it afterwards |
-| `MAILBOX_DEVICE_IDLE_DAYS` | phone keys unused this long stop working (default 30; `0` never) |
-| `MAILBOX_TRUSTED_PROXIES` | CIDRs of front ends whose `X-Forwarded-For` entry names the client (default `66.249.64.0/19`, Firebase Hosting's edge) |
-| `MAILBOX_DEBUG_ERRORS` | `1` returns store errors to callers, for diagnosis |
-| `MAILBOX_WEB_DIR` | serves the phone app; the Docker image sets `/web` |
-
-Health check: `GET /v1/health` returns `ok` once the store is connected.
-
 ## Releases
 
 CI (`.github/workflows/ci.yml`) runs on every push:
-- the Go tests, against a real MongoDB
+- the Go tests, with the race detector
 - the phone app's tests
-- a macOS build of `flow-remote`
-- the mailbox's Docker image
+- a Linux cross-build, and shellcheck on `install.sh`
+- a macOS build of `flow-remote`, with the Keychain and serve tests
 
 To publish binaries, push a version tag:
 
@@ -262,15 +226,15 @@ git tag v0.1.0 && git push origin v0.1.0
 ```
 
 `.github/workflows/release.yml` then builds `flow-remote` for macOS
-(arm64, amd64) and the mailbox for Linux (amd64, arm64), stamps the
-version, and attaches them with `checksums.txt` to a GitHub release.
+(arm64, amd64), stamps the version, and attaches the archives with
+`checksums.txt` to a GitHub release. `install.sh` and `flow-remote upgrade`
+download from there.
 
 ## Development
 
 ```bash
 go test ./...                       # includes end-to-end serve tests and WebCrypto interop under Node
 node --test web/js/*.test.mjs       # the phone app's own tests
-FLOW_REMOTE_MONGO_URI=mongodb://127.0.0.1:27017 go test ./internal/mailbox/   # the Mongo store
 ```
 
 To try the app on this computer without Tailscale, use a scratch home that

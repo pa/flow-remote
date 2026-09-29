@@ -17,6 +17,10 @@ import (
 // Bolt is a Store in one file, for a mailbox running on the Mac itself
 // (`flow-remote serve`). It holds one person's queues, so it keeps each
 // kind of record in its own bucket and scans rather than indexing.
+// touchEvery is how often a last-seen time is written to the file; the
+// latest stays in memory in between.
+const touchEvery = 20 * time.Second
+
 type Bolt struct {
 	db *bolt.DB
 
@@ -26,12 +30,11 @@ type Bolt struct {
 }
 
 var (
-	bEnvs    = []byte("envelopes")
-	bPairs   = []byte("pairs")
-	bMacs    = []byte("macs")
-	bDevs    = []byte("devices")
-	bInvites = []byte("invites")
-	bSeen    = []byte("seen")
+	bEnvs  = []byte("envelopes")
+	bPairs = []byte("pairs")
+	bMacs  = []byte("macs")
+	bDevs  = []byte("devices")
+	bSeen  = []byte("seen")
 )
 
 type boltRec struct {
@@ -51,7 +54,6 @@ type boltPair struct {
 type boltMac struct {
 	ID      string    `json:"id"`
 	SignPub string    `json:"sign_pub"`
-	Admin   bool      `json:"admin"`
 	Created time.Time `json:"created"`
 }
 
@@ -69,7 +71,7 @@ func OpenBolt(path string, timeout time.Duration) (*Bolt, error) {
 		return nil, err
 	}
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, b := range [][]byte{bEnvs, bPairs, bMacs, bDevs, bInvites, bSeen} {
+		for _, b := range [][]byte{bEnvs, bPairs, bMacs, bDevs, bSeen} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
@@ -245,48 +247,6 @@ func (s *Bolt) ListMacs(_ context.Context) ([]Mac, error) {
 	return out, err
 }
 
-func (s *Bolt) RemoveMac(_ context.Context, macID string) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
-		macs := tx.Bucket(bMacs)
-		if macs.Get([]byte(macID)) == nil {
-			return ErrNotFound
-		}
-		if err := macs.Delete([]byte(macID)); err != nil {
-			return err
-		}
-		gone := map[string]bool{macID: true}
-		devs := tx.Bucket(bDevs)
-		var owned []string
-		devs.ForEach(func(k, v []byte) error {
-			var d boltDev
-			if json.Unmarshal(v, &d) == nil && d.Owner == macID {
-				owned = append(owned, string(k))
-			}
-			return nil
-		})
-		for _, id := range owned {
-			gone[id] = true
-			var d boltDev
-			get(devs, id, &d)
-			// Keep the id, revoked, so it can't be re-registered.
-			d.Revoked = true
-			if err := put(devs, id, d); err != nil {
-				return err
-			}
-		}
-		if err := deleteWhere(tx.Bucket(bEnvs), func(v []byte) bool {
-			var r boltRec
-			return json.Unmarshal(v, &r) == nil && gone[r.To]
-		}); err != nil {
-			return err
-		}
-		return deleteWhere(tx.Bucket(bPairs), func(v []byte) bool {
-			var p boltPair
-			return json.Unmarshal(v, &p) == nil && p.Owner == macID
-		})
-	})
-}
-
 // deleteWhere deletes the keys whose value matches. Keys are collected
 // first: bbolt doesn't allow deleting while iterating with ForEach.
 func deleteWhere(b *bolt.Bucket, match func(v []byte) bool) error {
@@ -303,27 +263,6 @@ func deleteWhere(b *bolt.Bucket, match func(v []byte) bool) error {
 		}
 	}
 	return nil
-}
-
-func (s *Bolt) CreateInvite(_ context.Context, hash, _ string, now time.Time) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bInvites)
-		if b.Get([]byte(hash)) != nil {
-			return ErrExists
-		}
-		return put(b, hash, now.Add(InviteTTL))
-	})
-}
-
-func (s *Bolt) UseInvite(_ context.Context, hash string, now time.Time) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bInvites)
-		var exp time.Time
-		if !get(b, hash, &exp) || !now.Before(exp) {
-			return ErrNotFound
-		}
-		return b.Delete([]byte(hash))
-	})
 }
 
 func (s *Bolt) PutDevice(_ context.Context, owner, deviceID, signPub string) error {
@@ -435,15 +374,9 @@ func (s *Bolt) DeleteExpired(_ context.Context, now time.Time) (int, error) {
 		})); err != nil {
 			return err
 		}
-		if err := deleteWhere(tx.Bucket(bPairs), count(func(v []byte) bool {
+		return deleteWhere(tx.Bucket(bPairs), count(func(v []byte) bool {
 			var p boltPair
 			return json.Unmarshal(v, &p) == nil && !now.Before(p.ExpiresAt)
-		})); err != nil {
-			return err
-		}
-		return deleteWhere(tx.Bucket(bInvites), count(func(v []byte) bool {
-			var exp time.Time
-			return json.Unmarshal(v, &exp) == nil && !now.Before(exp)
 		}))
 	})
 	return n, err

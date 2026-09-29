@@ -3,15 +3,13 @@ package mailbox
 import (
 	"context"
 	"errors"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/pa/flow-remote/internal/envelope"
 )
 
-// contract is what every Store must do. It runs against Memory always and
-// against Mongo when FLOW_REMOTE_MONGO_URI points at a server.
+// contract is what every Store must do: Memory and Bolt both run it.
 func contract(t *testing.T, s Store) {
 	ctx := context.Background()
 	now := time.Now().Truncate(time.Millisecond) // Mongo stores milliseconds
@@ -88,7 +86,7 @@ func contract(t *testing.T, s Store) {
 	}
 
 	// Macs.
-	m1 := Mac{ID: "mac-1", SignPub: "key-a", Admin: true, Created: now}
+	m1 := Mac{ID: "mac-1", SignPub: "key-a", Created: now}
 	if err := s.RegisterMac(ctx, m1); err != nil {
 		t.Fatal(err)
 	}
@@ -98,30 +96,15 @@ func contract(t *testing.T, s Store) {
 	if err := s.RegisterMac(ctx, Mac{ID: "mac-1", SignPub: "key-b", Created: now}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("other key = %v", err)
 	}
-	if got, _ := s.GetMac(ctx, "mac-1"); got.SignPub != "key-a" || !got.Admin {
+	if got, _ := s.GetMac(ctx, "mac-1"); got.SignPub != "key-a" {
 		t.Fatalf("mac = %+v", got)
 	}
 	if _, err := s.GetMac(ctx, "mac-9"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing mac = %v", err)
 	}
 	s.RegisterMac(ctx, Mac{ID: "mac-2", SignPub: "key-c", Created: now.Add(time.Second)})
-	if list, _ := s.ListMacs(ctx); len(list) != 2 || list[0].ID != "mac-1" || list[1].Admin {
+	if list, _ := s.ListMacs(ctx); len(list) != 2 || list[0].ID != "mac-1" {
 		t.Fatalf("list macs = %+v", list)
-	}
-
-	// Invites: single use, and they expire.
-	if err := s.CreateInvite(ctx, "h1", "mac-1", now); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.UseInvite(ctx, "h1", now); err != nil {
-		t.Fatalf("use = %v", err)
-	}
-	if err := s.UseInvite(ctx, "h1", now); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("second use = %v", err)
-	}
-	s.CreateInvite(ctx, "h2", "mac-1", now)
-	if err := s.UseInvite(ctx, "h2", now.Add(InviteTTL+time.Second)); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("expired invite used: %v", err)
 	}
 
 	// Devices belong to one Mac.
@@ -153,29 +136,6 @@ func contract(t *testing.T, s Store) {
 		t.Fatalf("re-register revoked device = %v", err)
 	}
 
-	// Removing a tenant takes its devices and mail with it.
-	s.PutDevice(ctx, "mac-2", "dev-2", "key-f")
-	d2 := env("mac-2", "dev-2")
-	s.PutEnvelope(ctx, d2, now)
-	if err := s.RemoveMac(ctx, "mac-2"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.GetMac(ctx, "mac-2"); !errors.Is(err, ErrNotFound) {
-		t.Fatal("removed mac still there")
-	}
-	if _, err := s.GetDevice(ctx, "dev-2"); !errors.Is(err, ErrNotFound) {
-		t.Fatal("removed tenant's device still active")
-	}
-	if recs, _ := s.ListEnvelopes(ctx, "dev-2", 10, now); len(recs) != 0 {
-		t.Fatal("removed tenant's device still has mail")
-	}
-	if recs, _ := s.ListEnvelopes(ctx, "mac-2", 10, now); len(recs) != 0 {
-		t.Fatal("removed tenant still has mail")
-	}
-	if err := s.RemoveMac(ctx, "mac-2"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("second remove = %v", err)
-	}
-
 	// Presence.
 	if at, _ := s.LastSeen(ctx, "phone:mac-1"); !at.IsZero() {
 		t.Fatalf("unseen = %v", at)
@@ -186,7 +146,7 @@ func contract(t *testing.T, s Store) {
 		t.Fatalf("last seen = %v", at)
 	}
 
-	// Expiry: b (mac-1), pair-2, and invite h2 are left to expire.
+	// Expiry: b (mac-1), other (mac-2) and pair-2 are left to expire.
 	later := now.Add(Retention + time.Second)
 	if recs, _ := s.ListEnvelopes(ctx, "mac-1", 10, later); len(recs) != 0 {
 		t.Fatal("expired envelope listed")
@@ -198,21 +158,6 @@ func contract(t *testing.T, s Store) {
 }
 
 func TestMemoryContract(t *testing.T) { contract(t, NewMemory()) }
-
-func TestMongoContract(t *testing.T) {
-	uri := os.Getenv("FLOW_REMOTE_MONGO_URI")
-	if uri == "" {
-		t.Skip("set FLOW_REMOTE_MONGO_URI to test the Mongo store")
-	}
-	ctx := context.Background()
-	db := "flow_remote_test_" + envelope.NewID()[:8]
-	m, err := OpenMongo(ctx, uri, db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { m.envs.Database().Drop(ctx) })
-	contract(t, m)
-}
 
 func TestBoltContract(t *testing.T) {
 	s, err := OpenBolt(t.TempDir()+"/mailbox.db", time.Second)

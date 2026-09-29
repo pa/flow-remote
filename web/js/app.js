@@ -1,9 +1,9 @@
 // flow-remote phone app. Screens: get started / pair, sessions, thread,
 // settings. There's no sign-in: a device key authenticates every request.
 //
-// A phone can pair with several Macs. Each pairing has its own device key,
-// threads and session list, so the Macs can't be linked through this
-// phone's keys, and one Mac's tenant never sees another's.
+// A phone can pair with several computers. Each pairing has its own device
+// key, threads and session list, so the computers can't be linked through
+// this phone's keys.
 //
 // Every message body comes from a flow session or from the user, so the UI
 // is built with DOM nodes and textContent, never innerHTML.
@@ -317,7 +317,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v41";
+const BUILD = "v42";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -603,15 +603,12 @@ function guideScreen(adding) {
     h("section", { class: "card guide" },
       h("h2", {}, "On your computer"),
       h("ol", {},
-        h("li", {}, h("p", {}, "Install flow-remote from the repo (needs Go and flow):"),
-          cmd("git clone https://github.com/pa/flow-remote && cd flow-remote && go install ./cmd/flow-remote")),
+        h("li", {}, h("p", {}, "Install flow-remote (it needs flow):"),
+          cmd("curl -fsSL https://raw.githubusercontent.com/pa/flow-remote/main/install.sh | sh")),
         h("li", {},
-          h("p", {}, "Set up this computer. The first computer on a mailbox uses the mailbox's setup token:"),
-          cmd(`FLOW_REMOTE_SETUP_TOKEN=<token> flow-remote setup --mailbox ${origin}`),
-          h("p", { class: "muted" }, "Any other computer, yours or someone else's, uses an invite. On an admin computer run ",
-            h("code", {}, "flow-remote invite"), ", then on the new computer:"),
-          cmd(`FLOW_REMOTE_INVITE=<code> flow-remote setup --mailbox ${origin}`)),
-        h("li", {}, h("p", {}, "Start the relay. It runs in the background, starts at login, and restarts if it crashes:"),
+          h("p", {}, "Set it up. It walks you through the Tailscale settings, then asks for an auth key:"),
+          cmd('flow-remote setup --name "My laptop"')),
+        h("li", {}, h("p", {}, "Start it. It runs in the background, starts at login, and restarts if it crashes:"),
           cmd("flow-remote start"),
           h("p", { class: "muted" }, "Stop it with ", h("code", {}, "flow-remote stop"), ", check it with ", h("code", {}, "flow-remote status"), ".")),
         h("li", {}, h("p", {}, "Show a pairing QR code. It's valid for 2 minutes:"),

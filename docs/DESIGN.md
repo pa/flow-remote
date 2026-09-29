@@ -25,26 +25,18 @@ By default, `flow-remote` serves the phone itself, over the tailnet.
   own tailnet device with a software network stack. The computer gets no
   VPN interface, and nothing else on it becomes reachable. TLS ends here,
   so only this computer can serve or change the app's code.
-- **Mailbox server:** the same code as the hosted mailbox, with this
-  computer as its only tenant and a bbolt file for storage. Phones reach
+- **Mailbox server:** holds sealed envelopes until they're collected, with
+  this computer as its only tenant and a bbolt file for storage. Phones reach
   only the phone routes. The computer's own routes are on a unix socket.
 - **Relay:** checks each envelope's signature and the replay list, opens
   it, and runs `flow message`. It reads the human's inbox with
   `flow inbox --as user --all` and forwards sessions' mail to the phone.
   A post from a phone wakes it at once.
 
-For phones without Tailscale, there's a hosted mailbox:
-
-```
- phone (PWA)  ── HTTPS ──▶  mailbox (Cloud Run + Firestore, or Docker + MongoDB)  ◀── polls ──  relay
-                            sealed envelopes, public keys, last-seen                       on the computer
-```
-
-Its database exists because the phone and the computer are rarely online
-together, and Cloud Run drops in-memory state when it scales to zero. It
-holds ciphertext, public keys, 2-minute pairing slots and last-seen times.
-It holds no message text and no private keys. It serves the app too, so
-its operator can change the app's code.
+Until 2026-09-30 there was also a hosted mailbox (Cloud Run and
+Firestore via skoop, or Docker and MongoDB) for phones without Tailscale.
+It was removed once Tailscale worked; it's in the git history, and
+[ROADMAP.md](ROADMAP.md) lists what could take its place.
 
 ## Decisions
 
@@ -65,8 +57,9 @@ its operator can change the app's code.
 | "Waiting" means no answer yet | flow can't say when a session reads its inbox (Facets-cloud/flow#100); the evidence is a reply naming the message, or failing that any later reply |
 | Say why a computer is unreachable, judged from how the request failed | a tailnet name isn't in public DNS, so with Tailscale off the request fails at once; a computer that's down gives no answer until the 10 s timeout |
 | On an iPhone, pair in the installed app, not in Safari | a home-screen app keeps its storage apart from Safari, and keys made in Safari would stay there |
-| Polling every 3 s while the app is open | simple, and cheap on a tailnet; with the hosted mailbox, an always-open Cloud Run request would cost about $45–60/month |
-| Hosted mailbox: each computer a tenant, with invites | your other computers and other people's are separate by construction; an invite registers exactly one |
+| Polling every 3 s while the app is open | simple, and cheap on a tailnet |
+| Hosted mailbox removed (2026-09-30) | Tailscale covered the need; the skoop deployment was deleted and the code went with it |
+| `install.sh` and `flow-remote upgrade` | one command to install; the download is checked against the release's checksums.txt |
 
 ## Prior art we checked
 
@@ -115,7 +108,7 @@ Read from `docs/encryption.md`, `apps/cli/src/api/encryption.ts`,
 | Lost phone | rotate the account key | revoke that device |
 | Authenticity | AES-GCM: any key holder can write | each message signed; replays caught |
 | Pairing | QR + temporary key + HMAC secret | the same shape: QR + keys + HMAC one-time secret |
-| Multiple machines / people | built in: accounts are key-identified | per-computer tenants with single-use invites (hosted mailbox) |
+| Multiple machines / people | built in: accounts are key-identified | one app pairs with each computer separately, a key per computer |
 | Phone app | native, so pairing doesn't trust a web origin | web app, which does |
 | Delivery | WebSockets | polling, woken at once on the computer |
 
@@ -134,8 +127,7 @@ Read from `docs/encryption.md`, `apps/cli/src/api/encryption.ts`,
   Whoever serves the app's JavaScript could ship code that uses a paired
   phone's key while it's open. Happier's answer is native apps. Serving
   from the computer over Tailscale means TLS ends on your computer, so
-  nobody else can serve that code. A hosted mailbox still can, and the
-  README says so plainly. Phone messages that waited more than 10 minutes
+  nobody else can serve that code. Phone messages that waited more than 10 minutes
   are refused, so a held message can't be released later. A Face ID lock
   on sending is still to come.
 

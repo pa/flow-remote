@@ -33,6 +33,9 @@ keeps what you type for up to 10 minutes.
 
 ## 1. Prepare the tailnet (once)
 
+`flow-remote setup` shows these same steps one at a time in the terminal
+and waits for you to finish each, so you can follow along there instead.
+
 Everything here is in the [Tailscale admin console](https://console.tailscale.com/admin),
 as an Owner or Admin of the tailnet. It takes three settings: DNS with
 HTTPS, a tag in the policy file, and an auth key with that tag. Do them in

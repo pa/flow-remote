@@ -1,18 +1,11 @@
 package mailbox
 
 import (
-	"bytes"
 	"context"
 	"crypto/ecdsa"
-	"crypto/rand"
-	"crypto/sha256"
-	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -41,38 +34,21 @@ const (
 	// Expired data is deleted in passing, at most this often. Relays call
 	// in at least once a minute, so no scheduled job is needed.
 	cleanupEvery = time.Hour
-
-	HeaderSetup  = "X-FR-Setup"
-	HeaderInvite = "X-FR-Invite"
 )
 
-// Server is the mailbox API. Nobody signs in: a Mac signs requests with
-// its key and a phone with its device key, and the mailbox only knows the
-// public halves.
+// Server is the mailbox API that `flow-remote run` serves. Nobody signs
+// in: the computer signs requests with its key and a phone with its device
+// key, and the server only knows the public halves.
 //
-// Each Mac is a tenant. The first Mac registers with the setup token and
-// becomes an admin; others join with single-use invites that an admin
-// creates. A phone belongs to the Mac that enrolled it: it can only send to
-// that Mac and read its own queue, and a Mac can only manage, message or
-// pair its own phones.
+// The computer is registered in the Store directly (see internal/serve). A
+// phone belongs to the computer that enrolled it: it can only send to that
+// computer and read its own queue.
 type Server struct {
 	Store Store
-	// SetupToken registers the first (admin) Mac. Clear it once that's
-	// done; invites cover every Mac after that. Empty disables it.
-	SetupToken string
 	// DeviceIdle expires a phone key unused for this long; 0 never does.
 	// Like Remote Control's trusted devices and Tailscale's node keys, a
 	// forgotten phone then stops working on its own.
 	DeviceIdle time.Duration
-	// Proxies whose X-Forwarded-For entry names the real client; nil uses
-	// TrustedProxies (Firebase Hosting's edge).
-	Proxies []*net.IPNet
-	// DebugErrors returns store errors to callers instead of a reference.
-	// For diagnosing a deployment whose logs you can't read; off otherwise.
-	DebugErrors bool
-	// Ready, if set, gates the API: until it returns nil every call gets
-	// 503, and /v1/health says why.
-	Ready func() error
 	// Notify, if set, is called with the recipient after each envelope is
 	// stored, so a relay in the same process can act at once instead of on
 	// its next poll.
@@ -102,20 +78,8 @@ func (s *Server) Handler() http.Handler {
 	// Not /healthz: Google's front end reserves paths like it, so on Cloud
 	// Run the request never reaches the container.
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, _ *http.Request) {
-		if err := s.ready(); err != nil {
-			msg := "store not ready"
-			if s.DebugErrors {
-				msg += ": " + err.Error()
-			} else if s.Log != nil {
-				s.Log.Warn("health", "err", err)
-			}
-			s.fail(w, http.StatusServiceUnavailable, msg)
-			return
-		}
 		w.Write([]byte("ok"))
 	})
-
-	mux.HandleFunc("POST /v1/macs", s.registerMac)
 
 	// Phone. Pairing is the one unsigned call: the device key isn't
 	// registered yet, and the slot must have been opened by that Mac.
@@ -135,18 +99,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/relay/envelopes", s.mac(s.relayPost))
 	mux.HandleFunc("POST /v1/relay/ack", s.mac(s.relayAck))
 
-	// Admin Macs only.
-	mux.HandleFunc("POST /v1/relay/invites", s.admin(s.createInvite))
-	mux.HandleFunc("GET /v1/relay/tenants", s.admin(s.listTenants))
-	mux.HandleFunc("POST /v1/relay/tenants/{id}/remove", s.admin(s.removeTenant))
-
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.perIP.allow(clientIP(r, s.proxies()), s.now()) {
+		if !s.perIP.allow(clientIP(r), s.now()) {
 			s.fail(w, http.StatusTooManyRequests, "too many requests from this address")
-			return
-		}
-		if r.URL.Path != "/v1/health" && s.ready() != nil {
-			s.fail(w, http.StatusServiceUnavailable, "the mailbox is starting; try again shortly")
 			return
 		}
 		mux.ServeHTTP(w, r)
@@ -159,7 +114,7 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) PublicHandler() http.Handler {
 	h := s.Handler()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/v1/relay/") || r.URL.Path == "/v1/macs" {
+		if strings.HasPrefix(r.URL.Path, "/v1/relay/") {
 			s.fail(w, http.StatusNotFound, "not found")
 			return
 		}
@@ -167,27 +122,12 @@ func (s *Server) PublicHandler() http.Handler {
 	})
 }
 
-func (s *Server) proxies() []*net.IPNet {
-	if s.Proxies != nil {
-		return s.Proxies
-	}
-	return TrustedProxies
-}
-
-func (s *Server) ready() error {
-	if s.Ready == nil {
-		return nil
-	}
-	return s.Ready()
-}
-
 // ---- auth ----
 
 // caller is who signed the request. For a device, Mac is its owner.
 type caller struct {
-	ID    string
-	Mac   string
-	Admin bool
+	ID  string
+	Mac string
 }
 
 type handler func(http.ResponseWriter, *http.Request, caller)
@@ -235,7 +175,6 @@ func (s *Server) device(h handler) http.HandlerFunc {
 func (s *Server) mac(h handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
-		var mac Mac
 		var lookupErr error
 		id, err := reqsig.Verify(r, func(id string) (*ecdsa.PublicKey, error) {
 			if !strings.HasPrefix(id, "mac-") {
@@ -246,7 +185,6 @@ func (s *Server) mac(h handler) http.HandlerFunc {
 				lookupErr = err
 				return nil, err
 			}
-			mac = m
 			return envelope.ParseSignPub(m.SignPub)
 		}, s.now())
 		if errors.Is(lookupErr, errBusy) {
@@ -263,7 +201,7 @@ func (s *Server) mac(h handler) http.HandlerFunc {
 		}
 		s.Store.Touch(r.Context(), "mac:"+id, s.now())
 		s.maybeCleanup(r.Context())
-		h(w, r, caller{ID: id, Mac: id, Admin: mac.Admin})
+		h(w, r, caller{ID: id, Mac: id})
 	}
 }
 
@@ -276,103 +214,6 @@ func (s *Server) expired(ctx context.Context, deviceID string) bool {
 	}
 	last, err := s.Store.LastSeen(ctx, "dev:"+deviceID)
 	return err == nil && !last.IsZero() && s.now().Sub(last) > s.DeviceIdle
-}
-
-func (s *Server) admin(h handler) http.HandlerFunc {
-	return s.mac(func(w http.ResponseWriter, r *http.Request, c caller) {
-		if !c.Admin {
-			s.fail(w, http.StatusForbidden, "only an admin computer can do that")
-			return
-		}
-		h(w, r, c)
-	})
-}
-
-func hashCode(code string) string {
-	h := sha256.Sum256([]byte(code))
-	return hex.EncodeToString(h[:])
-}
-
-// registerMac adds a tenant. It needs either the setup token (the first,
-// admin Mac) or an unused invite, and the request must be signed by the key
-// being registered, so a token or invite alone can't register someone
-// else's key. An invite is spent only once the rest of the request checks
-// out.
-func (s *Server) registerMac(w http.ResponseWriter, r *http.Request) {
-	setup, invite := r.Header.Get(HeaderSetup), r.Header.Get(HeaderInvite)
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
-	if err != nil {
-		s.fail(w, http.StatusBadRequest, "body too large")
-		return
-	}
-	var req struct {
-		MacID   string `json:"mac_id"`
-		SignPub string `json:"sign_pub"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil || !strings.HasPrefix(req.MacID, "mac-") {
-		s.fail(w, http.StatusBadRequest, "bad registration")
-		return
-	}
-	key, err := envelope.ParseSignPub(req.SignPub)
-	if err != nil {
-		s.fail(w, http.StatusBadRequest, "bad mac key")
-		return
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	if _, err := reqsig.Verify(r, func(id string) (*ecdsa.PublicKey, error) {
-		if id != req.MacID {
-			return nil, reqsig.ErrUnsigned
-		}
-		return key, nil
-	}, s.now()); err != nil {
-		s.fail(w, http.StatusUnauthorized, "registration must be signed by the key it registers")
-		return
-	}
-	ctx := r.Context()
-	// Anyone can make a self-signed registration, so it spends from the
-	// global budget before it touches the store.
-	if !s.spendMiss() {
-		s.fail(w, http.StatusTooManyRequests, "the mailbox is busy; try again shortly")
-		return
-	}
-	// A Mac that's already registered with this key needs nothing more:
-	// the signature just proved it holds the key.
-	if cur, err := s.Store.GetMac(ctx, req.MacID); err == nil {
-		if cur.SignPub != req.SignPub {
-			s.storeErr(w, ErrConflict)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	admin := false
-	switch {
-	case setup != "":
-		if s.SetupToken == "" || subtle.ConstantTimeCompare([]byte(setup), []byte(s.SetupToken)) != 1 {
-			s.fail(w, http.StatusForbidden, "wrong setup token, or setup is switched off")
-			return
-		}
-		admin = true
-	case invite == "":
-		s.fail(w, http.StatusForbidden, "registering needs an invite from an admin computer (`flow-remote invite`)")
-		return
-	}
-	if invite != "" && setup == "" {
-		if err := s.Store.UseInvite(ctx, hashCode(invite), s.now()); err != nil {
-			s.fail(w, http.StatusForbidden, "that invite is unknown, used or expired")
-			return
-		}
-	}
-	mac := Mac{ID: req.MacID, SignPub: req.SignPub, Admin: admin, Created: s.now()}
-	err = s.Store.RegisterMac(ctx, mac)
-	if err != nil && !errors.Is(err, ErrExists) {
-		s.storeErr(w, err)
-		return
-	}
-	if m, err := s.Store.GetMac(ctx, req.MacID); err == nil {
-		s.keys.put("mac:"+req.MacID, cacheEntry{mac: m, expires: s.now().Add(keyCacheTTL)})
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 // ---- phone ----
@@ -589,51 +430,6 @@ func (s *Server) relayAck(w http.ResponseWriter, r *http.Request, c caller) {
 
 // ---- admin ----
 
-// createInvite returns a single-use code. Only its hash is stored, so the
-// database never holds a usable invite.
-func (s *Server) createInvite(w http.ResponseWriter, r *http.Request, c caller) {
-	raw := make([]byte, 24)
-	rand.Read(raw)
-	code := "inv-" + envelope.Encode(raw)
-	if err := s.Store.CreateInvite(r.Context(), hashCode(code), c.Mac, s.now()); err != nil {
-		s.storeErr(w, err)
-		return
-	}
-	s.json(w, http.StatusCreated, map[string]any{"code": code, "expires": s.now().Add(InviteTTL)})
-}
-
-func (s *Server) listTenants(w http.ResponseWriter, r *http.Request, _ caller) {
-	macs, err := s.Store.ListMacs(r.Context())
-	if err != nil {
-		s.storeErr(w, err)
-		return
-	}
-	out := make([]map[string]any, 0, len(macs))
-	for _, m := range macs {
-		t, _ := s.Store.LastSeen(r.Context(), "mac:"+m.ID)
-		out = append(out, map[string]any{"id": m.ID, "admin": m.Admin, "created": m.Created, "last_seen": nullTime(t)})
-	}
-	s.json(w, http.StatusOK, map[string]any{"tenants": out})
-}
-
-func (s *Server) removeTenant(w http.ResponseWriter, r *http.Request, c caller) {
-	id := r.PathValue("id")
-	if id == c.Mac {
-		s.fail(w, http.StatusBadRequest, "a computer can't remove itself")
-		return
-	}
-	devs, _ := s.Store.ListDevices(r.Context(), id)
-	if err := s.Store.RemoveMac(r.Context(), id); err != nil {
-		s.storeErr(w, err)
-		return
-	}
-	s.keys.drop("mac:" + id)
-	for _, d := range devs {
-		s.keys.drop("dev:" + d)
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
 // ---- shared ----
 
 var errBusy = errors.New("mailbox: busy")
@@ -730,8 +526,6 @@ func (s *Server) storeErr(w http.ResponseWriter, err error) {
 		s.fail(w, http.StatusConflict, "that id is registered with a different key, or revoked")
 	case errors.Is(err, ErrNotFound):
 		s.fail(w, http.StatusNotFound, "not found")
-	case errors.Is(err, ErrUnavailable):
-		s.fail(w, http.StatusServiceUnavailable, "the mailbox is starting; try again shortly")
 	case errors.Is(err, errBusy):
 		s.fail(w, http.StatusTooManyRequests, "the mailbox is busy; try again shortly")
 	default:
@@ -742,18 +536,14 @@ func (s *Server) storeErr(w http.ResponseWriter, err error) {
 		if s.Log != nil {
 			s.Log.Error("store", "err", err, "ref", ref)
 		}
-		msg := "store error (ref " + ref + ")"
-		if s.DebugErrors {
-			msg += ": " + err.Error()
-		}
-		s.fail(w, http.StatusInternalServerError, msg)
+		s.fail(w, http.StatusInternalServerError, "store error (ref "+ref+")")
 	}
 }
 
 // storeErrPublic is storeErr for the one unauthenticated call.
 func (s *Server) storeErrPublic(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, ErrExists), errors.Is(err, ErrConflict), errors.Is(err, ErrNotFound), errors.Is(err, ErrUnavailable):
+	case errors.Is(err, ErrExists), errors.Is(err, ErrConflict), errors.Is(err, ErrNotFound):
 		s.storeErr(w, err)
 	default:
 		if s.Log != nil {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 )
@@ -21,8 +20,7 @@ import (
 //   - Until Warm finishes, lookups that miss spend from one small global
 //     budget, as do the unsigned pairing post and registration, so a flood
 //     tops out at a few database operations a second whatever its size.
-//   - Each client IP gets a request budget. It's best effort: behind
-//     Google's front end the client address comes from X-Forwarded-For.
+//   - Each client address gets a request budget.
 const (
 	keyCacheTTL  = 100 * 365 * 24 * time.Hour // entries leave by drop(), not by age
 	missRate     = 5                          // per second, across all clients
@@ -140,68 +138,10 @@ func (l *ipLimiter) allow(ip string, now time.Time) bool {
 	return b.take(ipPerMinute/60.0, ipPerMinute/4.0, now)
 }
 
-// TrustedProxies are the front ends whose X-Forwarded-For entry we accept
-// as naming the real client. Measured on Firebase Hosting in front of Cloud
-// Run: Hosting drops whatever X-Forwarded-For the client sent, sets
-// "<client>, <hosting edge>", and the edge is in 66.249.64.0/19. Straight
-// to Cloud Run, the client's own entries survive and Google appends the
-// real address last.
-var TrustedProxies = mustCIDRs("66.249.64.0/19")
-
-func mustCIDRs(list ...string) []*net.IPNet {
-	var out []*net.IPNet
-	for _, c := range list {
-		if _, n, err := net.ParseCIDR(c); err == nil {
-			out = append(out, n)
-		}
-	}
-	return out
-}
-
-// ParseTrustedProxies reads a comma-separated CIDR list.
-func ParseTrustedProxies(csv string) ([]*net.IPNet, error) {
-	var out []*net.IPNet
-	for _, c := range strings.Split(csv, ",") {
-		if c = strings.TrimSpace(c); c == "" {
-			continue
-		}
-		_, n, err := net.ParseCIDR(c)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, n)
-	}
-	return out, nil
-}
-
-func trusted(ip string, proxies []*net.IPNet) bool {
-	p := net.ParseIP(ip)
-	if p == nil {
-		return false
-	}
-	for _, n := range proxies {
-		if n.Contains(p) {
-			return true
-		}
-	}
-	return false
-}
-
-// clientIP returns the address to rate-limit on. It walks X-Forwarded-For
-// from the right, the end Google's front end appends to, skipping entries
-// that are trusted proxies. The left end is whatever the client sent and
-// is never trusted. Headers such as Fastly-Client-Ip aren't used either:
-// a request sent straight to Cloud Run can set them to anything.
-func clientIP(r *http.Request, proxies []*net.IPNet) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		for i := len(parts) - 1; i >= 0; i-- {
-			ip := strings.TrimSpace(parts[i])
-			if i == 0 || !trusted(ip, proxies) {
-				return ip
-			}
-		}
-	}
+// clientIP is the address to rate-limit on: the connection's own. Nothing
+// in front of `flow-remote run` is trusted to name the client, so
+// X-Forwarded-For is ignored (internal/serve also drops it).
+func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr

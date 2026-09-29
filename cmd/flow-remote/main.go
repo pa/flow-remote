@@ -1,33 +1,22 @@
-// Command flow-remote is the Mac side of flow-remote: it sets up this Mac,
-// pairs phones, and runs the relay that carries messages between phones
-// and flow sessions.
+// Command flow-remote serves your flow sessions to your phone: it sets up
+// this computer, pairs phones, and runs the server that carries messages
+// between phones and flow sessions. Phones reach it over your tailnet.
 //
-// Two ways to run. With a tunnel, this process is the server: it serves
-// the phone app and the mailbox itself, and phones reach it through the
-// tunnel. With a hosted mailbox, the relay polls one running elsewhere.
-//
-//	flow-remote setup [--name N]          serve from this machine over your
-//	                                      tailnet (--tunnel tailscale, the
-//	                                      default); asks for a single-use auth
-//	                                      key tagged tag:flow-remote
+//	flow-remote setup [--name N] [--app URL]
+//	                                      join your tailnet (--tunnel tailscale,
+//	                                      the default); asks for a single-use
+//	                                      auth key tagged tag:flow-remote
 //	flow-remote setup --tunnel none --listen ADDR --public-url URL
-//	                                      serve from this machine; you route
-//	                                      URL to ADDR (TLS must end here)
-//	flow-remote setup --mailbox URL [--app URL]
-//	                                      use a hosted mailbox and register
-//	                                      this Mac: the first Mac with
-//	                                      FLOW_REMOTE_SETUP_TOKEN, others with
-//	                                      FLOW_REMOTE_INVITE from `invite`
-//	flow-remote pair [--png FILE]               show a QR code (and optionally save it
+//	                                      serve on ADDR; you route URL to it
+//	                                      (for tests, and localhost)
+//	flow-remote pair [--png FILE]         show a QR code (and optionally save it
 //	                                      as an image) and enroll a phone
-//	flow-remote run                             deliver messages in the foreground
-//	flow-remote start | stop | status           run it as a launchd agent (at login,
+//	flow-remote run                       serve in the foreground
+//	flow-remote start | stop | status     run it as a launchd agent (at login,
 //	                                      restarted on crash), stop it, check it
-//	flow-remote devices                         list enrolled phones
-//	flow-remote revoke <device-id>              stop trusting a phone
-//	flow-remote invite                          (admin) a single-use code for another Mac
-//	flow-remote tenants                         (admin) list the Macs using this mailbox
-//	flow-remote remove-tenant <mac-id>          (admin) remove a Mac, its phones and mail
+//	flow-remote upgrade                   install the latest release in place
+//	flow-remote devices [--all]           list enrolled phones
+//	flow-remote revoke <device-id>        stop trusting a phone
 //
 // Keys and the device list live in the login Keychain under "flow-remote".
 // Everything else is in ~/.flow-remote.
@@ -69,27 +58,20 @@ import (
 var version = "dev"
 
 type config struct {
-	// Tunnel set means this machine serves phones itself. Empty means a
-	// hosted mailbox at Mailbox.
-	Tunnel    string   `json:"tunnel,omitempty"`
+	Tunnel    string   `json:"tunnel,omitempty"`     // how phones reach this computer: tailscale or none
 	Hostname  string   `json:"hostname,omitempty"`   // tunnel "tailscale": the tailnet device name
 	Listen    string   `json:"listen,omitempty"`     // tunnel "none": where to listen
 	PublicURL string   `json:"public_url,omitempty"` // tunnel "none": what phones use
 	Origins   []string `json:"origins,omitempty"`    // other app addresses allowed to call this one
-	Mailbox   string   `json:"mailbox,omitempty"`
+	Mailbox   string   `json:"mailbox,omitempty"`    // set by versions with a hosted mailbox; no longer used
 	App       string   `json:"app,omitempty"`
 	Name      string   `json:"name,omitempty"` // what phones call this Mac
 }
 
-func (c config) local() bool { return c.Tunnel != "" }
-
-// mailboxClient reaches this Mac's mailbox: the socket of the running
-// serve, or the hosted one.
-func mailboxClient(c config, mac *identity.Mac) *client.Client {
-	if c.local() {
-		return serve.Client(home(), mac)
-	}
-	return &client.Client{BaseURL: c.Mailbox, Mac: mac}
+// mailboxClient reaches this computer's mailbox, on the running server's
+// socket.
+func mailboxClient(_ config, mac *identity.Mac) *client.Client {
+	return serve.Client(home(), mac)
 }
 
 // explain turns "nothing on the socket" into what to do about it.
@@ -135,16 +117,12 @@ func main() {
 		err = agentStop()
 	case "status":
 		err = agentStatus()
+	case "upgrade":
+		err = upgrade(ctx, os.Args[2:])
 	case "devices":
 		err = devices(os.Args[2:])
 	case "revoke":
 		err = revoke(os.Args[2:])
-	case "invite":
-		err = invite(ctx)
-	case "tenants":
-		err = tenants(ctx)
-	case "remove-tenant":
-		err = removeTenant(ctx, os.Args[2:])
 	default:
 		usage()
 	}
@@ -157,13 +135,11 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: flow-remote <command>
   setup [--name N]                  serve this computer's phones over your tailnet (asks for a Tailscale auth key)
-  setup --mailbox URL [--name N]    use a hosted mailbox instead (FLOW_REMOTE_SETUP_TOKEN or FLOW_REMOTE_INVITE)
   start | stop | status             run in the background (launchd), stop, check
   run                               run in the foreground
   pair [--png FILE]                 show a QR code and enroll a phone
   devices [--all] | revoke <id>     list this computer's phones (--all: with revoked), or revoke one
-  invite                            (hosted mailbox, admin) a single-use code for another computer
-  tenants | remove-tenant <mac-id>  (hosted mailbox, admin) list or remove computers
+  upgrade [--check]                 install the latest release in place (--check: only say if there's one)
   version                           print the version`)
 	os.Exit(2)
 }
@@ -192,7 +168,13 @@ func loadConfig() (config, error) {
 	if err != nil {
 		return c, err
 	}
-	return c, json.Unmarshal(b, &c)
+	if err := json.Unmarshal(b, &c); err != nil {
+		return c, err
+	}
+	if c.Tunnel == "" {
+		return c, errors.New("this computer was set up for the hosted mailbox, which is gone; run `flow-remote setup` to serve over Tailscale")
+	}
+	return c, nil
 }
 
 func setup(args []string) error {
@@ -200,45 +182,17 @@ func setup(args []string) error {
 	tun := fs.String("tunnel", "", "serve phones from this machine through this tunnel: tailscale or none")
 	listen := fs.String("listen", "127.0.0.1:8484", "tunnel none: address to listen on")
 	public := fs.String("public-url", "", "tunnel none: the https URL phones use to reach --listen")
-	mb := fs.String("mailbox", "", "hosted mailbox base URL")
-	app := fs.String("app", "", "phone app URL (default: this machine's, or the mailbox's)")
+	app := fs.String("app", "", "the phone app to pair from, if it's another computer's (default: this one's)")
 	name := fs.String("name", "", "what phones call this computer (default: its hostname)")
 	fs.Parse(args)
-	// Serving over your tailnet is the default; --mailbox is the hosted way.
-	if *tun == "" && *mb == "" {
+	if *tun == "" {
 		*tun = "tailscale"
 	}
-	if *tun != "" {
-		return setupLocal(*tun, *listen, *public, *app, *name)
-	}
-	if *app == "" {
-		*app = *mb // the mailbox serves the phone app too
-	}
-	if err := writeConfig(config{Mailbox: strings.TrimRight(*mb, "/"), App: strings.TrimRight(*app, "/"), Name: *name}); err != nil {
-		return err
-	}
-	mac, err := identity.LoadOrCreateMac(store())
-	if err != nil {
-		return err
-	}
-	fmt.Printf("saved. This computer is %s, fingerprint %s\n", mac.ID, mac.Fingerprint())
-	// Secrets come from the environment so they stay out of shell history
-	// and the process list.
-	tok, inv := os.Getenv("FLOW_REMOTE_SETUP_TOKEN"), os.Getenv("FLOW_REMOTE_INVITE")
-	c := &client.Client{BaseURL: strings.TrimRight(*mb, "/"), Mac: mac}
-	if err := c.Register(context.Background(), tok, inv); err != nil {
-		if tok == "" && inv == "" {
-			fmt.Println("not registered yet. Ask an admin computer for `flow-remote invite`, then run setup again with FLOW_REMOTE_INVITE=<code>.")
-			return nil
-		}
-		return fmt.Errorf("registering with the mailbox: %w", err)
-	}
-	fmt.Println("registered with the mailbox. Next: `flow-remote start`, then `flow-remote pair`.")
-	return nil
+	return setupLocal(*tun, *listen, *public, *app, *name)
 }
 
-// setupLocal saves the settings for serving from this machine. Nothing to
-// register: `run` makes this Mac the only tenant of its own mailbox.
+// setupLocal saves the settings for serving from this computer. Nothing to
+// register: `run` makes this computer the only tenant of its own mailbox.
 func setupLocal(tun, listen, public, app, name string) error {
 	switch tun {
 	case "tailscale":
@@ -288,10 +242,13 @@ func setupTailscale(app, name string) error {
 	ts := &tunnel.Tailscale{Dir: tailscaleDir(), Hostname: host, Logf: func(f string, a ...any) { fmt.Printf(f+"\n", a...) }}
 	if !tunnel.Joined(ts.Dir) {
 		key := os.Getenv("TS_AUTHKEY")
+		if key == "" && term.IsTerminal(int(os.Stdin.Fd())) {
+			if err := tailnetGuide(host); err != nil {
+				return err
+			}
+		}
 		if key == "" {
-			fmt.Println("Tailscale auth key: in the admin console, Settings > Keys > Generate auth key,")
-			fmt.Println("single-use, not ephemeral, pre-approved, tagged tag:flow-remote.")
-			fmt.Print("Paste it (input hidden): ")
+			fmt.Print("Paste the auth key (input hidden): ")
 			var b []byte
 			var err error
 			if fd := int(os.Stdin.Fd()); term.IsTerminal(fd) {
@@ -332,6 +289,56 @@ func setupTailscale(app, name string) error {
 	return nil
 }
 
+// tailnetGuide walks through the admin console before asking for the key,
+// one step at a time. It only runs at a terminal: with TS_AUTHKEY set or a
+// key piped in, setup goes straight on.
+func tailnetGuide(host string) error {
+	in := bufio.NewReader(os.Stdin)
+	steps := []struct{ title, body string }{
+		{"Turn on MagicDNS and HTTPS certificates", `Open https://console.tailscale.com/admin/dns
+  - If MagicDNS is off, select Enable MagicDNS.
+  - Under HTTPS Certificates, select Enable HTTPS and accept the notice.
+
+HTTPS certificates are published in public Certificate Transparency logs,
+so this computer's address will be public:
+    ` + host + `.<your-tailnet>.ts.net
+If that name says too much (a customer, a project), press Ctrl-C and run
+setup again with a different --name.`},
+		{"Add the tag, and who can reach it", `Open https://console.tailscale.com/admin/acls and switch to the JSON editor.
+Add these next to what's already there, then select Save:
+
+    "tagOwners": {
+      "tag:flow-remote": ["autogroup:admin"]
+    },
+    "grants": [
+      { "src": ["autogroup:member"], "dst": ["tag:flow-remote"], "ip": ["tcp:443"] }
+    ]
+
+Only your own devices reach this computer, and only on port 443. If the
+file already has a "grants" or "tagOwners" section, add the entries inside
+it rather than a second one.`},
+		{"Create the auth key", `Open https://console.tailscale.com/admin/settings/keys and select
+Generate auth key, with:
+  - Reusable:      off   (one key, one device)
+  - Expiration:    1 day (it's only needed now)
+  - Ephemeral:     off   (it would vanish whenever the computer sleeps)
+  - Tags:          on, tag:flow-remote   (missing? step 2 wasn't saved)
+  - Pre-approved:  on, if it's shown
+Select Generate key and copy it. It starts with tskey-auth- and is shown once.`},
+	}
+	fmt.Println("\nflow-remote joins your tailnet as its own device. First, three settings in")
+	fmt.Println("the Tailscale admin console (you need to be an Owner or Admin there).")
+	fmt.Println("Already done? Just press Enter through them.")
+	for i, st := range steps {
+		fmt.Printf("\n%d of %d. %s\n\n%s\n\nPress Enter when done: ", i+1, len(steps), st.title, st.body)
+		if _, err := in.ReadString('\n'); err != nil {
+			return errors.New("stopped")
+		}
+	}
+	fmt.Println()
+	return nil
+}
+
 func writeConfig(c config) error {
 	b, _ := json.MarshalIndent(c, "", "  ")
 	if err := os.MkdirAll(home(), 0o700); err != nil {
@@ -363,7 +370,7 @@ func pair(ctx context.Context, args []string) error {
 	// than this Mac's mailbox (another of your machines), the offer says
 	// where the mailbox is.
 	appURL, mailboxURL := cfg.App, ""
-	if cfg.local() {
+	{
 		served, err := servedURL()
 		if err != nil {
 			return err
@@ -377,7 +384,7 @@ func pair(ctx context.Context, args []string) error {
 	}
 	offer := pairing.NewOffer(mac, mailboxURL, time.Now())
 	if err := mb.OpenPair(ctx, offer.PairID); err != nil {
-		return fmt.Errorf("opening the pairing at the mailbox: %w", explain(err))
+		return fmt.Errorf("opening the pairing: %w", explain(err))
 	}
 	link := offer.Link(appURL)
 	code, err := qr.Encode(link, qr.L)
@@ -431,7 +438,7 @@ func pair(ctx context.Context, args []string) error {
 		return err
 	}
 	if err := mb.PutDevice(ctx, dev); err != nil {
-		return fmt.Errorf("enrolled here, but registering it with the mailbox failed (the relay retries on start): %w", err)
+		return fmt.Errorf("enrolled here, but the running server didn't take it (it syncs on start): %w", err)
 	}
 	macName := cfg.Name
 	if macName == "" {
@@ -514,14 +521,7 @@ func run(ctx context.Context) error {
 		Mac: mac, Devices: devs, Guard: guard, State: state, Audit: audit, Log: log,
 		Flow: flowcli.CLI{},
 	}
-	if cfg.local() {
-		return runLocal(ctx, cfg, r, log)
-	}
-	mb := &client.Client{BaseURL: cfg.Mailbox, Mac: mac}
-	r.Mailbox = mb
-	syncDevices(ctx, mb, devs, log)
-	log.Info("relay running", "mac", mac.ID, "devices", len(devs.List()), "mailbox", cfg.Mailbox)
-	return r.Loop(ctx, nil)
+	return runLocal(ctx, cfg, r, log)
 }
 
 // runLocal serves phones from this machine: the app, the mailbox and the
@@ -556,22 +556,6 @@ func runLocal(ctx context.Context, cfg config, r *relay.Relay, log *slog.Logger)
 	})
 }
 
-// syncDevices makes the mailbox's device list match the Keychain's, in
-// case a registration or revocation failed earlier.
-func syncDevices(ctx context.Context, mb *client.Client, devs *identity.Devices, log *slog.Logger) {
-	for _, d := range devs.List() {
-		var err error
-		if d.Revoked() {
-			err = mb.RevokeDevice(ctx, d.ID)
-		} else {
-			err = mb.PutDevice(ctx, d)
-		}
-		if err != nil {
-			log.Warn("device sync", "device", d.ID, "err", err)
-		}
-	}
-}
-
 // devices lists this Mac's active phones. Revoked ones stay on record, so
 // their ids can never be enrolled again with a new key, and --all shows them.
 func devices(args []string) error {
@@ -580,7 +564,7 @@ func devices(args []string) error {
 	if err != nil {
 		return err
 	}
-	// Ask the mailbox when each phone last checked in; offline is fine.
+	// Ask the running server when each phone last checked in; stopped is fine.
 	seen := map[string]client.DeviceStatus{}
 	idleDays := 0
 	if c, err := adminClient(); err == nil {
@@ -630,7 +614,7 @@ func devices(args []string) error {
 func ago(t time.Time) string {
 	d := time.Since(t).Round(time.Second)
 	if d < 0 {
-		d = 0 // the mailbox's clock is slightly ahead of ours
+		d = 0 // a clock slightly ahead of ours
 	}
 	var rel string
 	switch {
@@ -663,8 +647,8 @@ func revoke(args []string) error {
 	}
 	if _, known := devs.Active(args[0]); !known && !slices.ContainsFunc(devs.List(), func(d identity.Device) bool { return d.ID == args[0] }) {
 		// Not in this Mac's list, e.g. lost from a damaged registry. The
-		// mailbox may still accept it, so revoke it there anyway.
-		fmt.Printf("%s isn't in this computer's device list; revoking it on the mailbox only.\n", args[0])
+		// server may still accept it, so revoke it there anyway.
+		fmt.Printf("%s isn't in this computer's device list; revoking it on the server only.\n", args[0])
 	} else {
 		if err := devs.Revoke(args[0], time.Now()); err != nil {
 			return err
@@ -681,13 +665,13 @@ func revoke(args []string) error {
 	}
 	mb := mailboxClient(cfg, mac)
 	if err := mb.RevokeDevice(context.Background(), args[0]); errors.Is(err, client.ErrNotFound) {
-		fmt.Println("the mailbox doesn't have it either; nothing more to do.")
+		fmt.Println("the server doesn't have it either; nothing more to do.")
 		return nil
 	} else if err != nil {
-		fmt.Printf("the mailbox didn't get the revocation (%v); the relay retries it when it next starts.\n", explain(err))
+		fmt.Printf("the running server didn't get the revocation (%v); it picks it up when it next starts.\n", explain(err))
 		return nil
 	}
-	fmt.Println("the mailbox rejects its requests too.")
+	fmt.Println("the running server rejects its requests too.")
 	return nil
 }
 
@@ -701,87 +685,4 @@ func adminClient() (*client.Client, error) {
 		return nil, err
 	}
 	return mailboxClient(cfg, mac), nil
-}
-
-// hostedOnly refuses the tenant commands when this machine serves itself:
-// its mailbox has one tenant, this Mac.
-func hostedOnly() error {
-	if cfg, err := loadConfig(); err == nil && cfg.local() {
-		return errors.New("this computer serves its own phones, so there are no other tenants to manage")
-	}
-	return nil
-}
-
-func invite(ctx context.Context) error {
-	if err := hostedOnly(); err != nil {
-		return err
-	}
-	c, err := adminClient()
-	if err != nil {
-		return err
-	}
-	code, exp, err := c.Invite(ctx)
-	if err != nil {
-		return err
-	}
-	fmt.Printf(`Single-use invite, valid until %s:
-
-  %s
-
-On the other computer, after installing flow-remote:
-
-  FLOW_REMOTE_INVITE=%s flow-remote setup --mailbox %s
-
-The invite adds that computer as its own tenant. It can't see or reach this
-computer's sessions or phones, and this computer can't reach its. Both of you still
-trust whoever runs this mailbox: it serves the phone app's code.
-`, exp.Local().Format(time.RFC1123), code, code, c.BaseURL)
-	return nil
-}
-
-func tenants(ctx context.Context) error {
-	if err := hostedOnly(); err != nil {
-		return err
-	}
-	c, err := adminClient()
-	if err != nil {
-		return err
-	}
-	list, err := c.Tenants(ctx)
-	if err != nil {
-		return err
-	}
-	for _, t := range list {
-		role, seen := "member", "never"
-		if t.Admin {
-			role = "admin"
-		}
-		if t.LastSeen != nil {
-			seen = t.LastSeen.Local().Format(time.DateTime)
-		}
-		me := ""
-		if t.ID == c.Mac.ID {
-			me = "  (this computer)"
-		}
-		fmt.Printf("%s  %-6s  joined %s  last seen %s%s\n", t.ID, role, t.Created.Local().Format(time.DateOnly), seen, me)
-	}
-	return nil
-}
-
-func removeTenant(ctx context.Context, args []string) error {
-	if len(args) != 1 {
-		return errors.New("usage: flow-remote remove-tenant <mac-id>")
-	}
-	if err := hostedOnly(); err != nil {
-		return err
-	}
-	c, err := adminClient()
-	if err != nil {
-		return err
-	}
-	if err := c.RemoveTenant(ctx, args[0]); err != nil {
-		return err
-	}
-	fmt.Printf("removed %s, its phones and its queued mail.\n", args[0])
-	return nil
 }

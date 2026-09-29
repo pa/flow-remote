@@ -77,9 +77,8 @@ func Run(ctx context.Context, o Options) error {
 	}
 	defer db.Close()
 
-	// This machine is the only tenant, registered directly: no setup
-	// token, no invites.
-	err = db.RegisterMac(ctx, mailbox.Mac{ID: o.Mac.ID, SignPub: o.Mac.SignPub(), Admin: true, Created: time.Now()})
+	// This computer is the only tenant, registered directly.
+	err = db.RegisterMac(ctx, mailbox.Mac{ID: o.Mac.ID, SignPub: o.Mac.SignPub(), Created: time.Now()})
 	if errors.Is(err, mailbox.ErrConflict) {
 		return errors.New("mailbox.db belongs to a different identity for this computer; move it aside to start fresh")
 	}
@@ -106,7 +105,6 @@ func Run(ctx context.Context, o Options) error {
 	wake := make(chan struct{}, 1)
 	srv := &mailbox.Server{
 		Store: db, DeviceIdle: o.DeviceIdle, Log: o.Log,
-		Proxies: []*net.IPNet{}, // nothing in front is trusted; forwarded headers are dropped below
 		Notify: func(to string) {
 			if to == o.Mac.ID {
 				select {

@@ -1,8 +1,8 @@
 # Envelope protocol, v1
 
 Every message between the phone and the computer travels as one envelope.
-Whatever carries envelopes, the server in `flow-remote run` or a hosted
-mailbox, can read the routing fields and nothing else. It can't forge or
+Whatever carries envelopes (the server in `flow-remote run`, and
+Tailscale in between) can read the routing fields and nothing else. It can't forge or
 alter an envelope without the receiver noticing.
 
 Field names say `mac` (`mac_id`, `mac_sign_pub`) for the computer's side.
@@ -95,40 +95,22 @@ single pairing post, and the mailbox only ever holds public keys.
 `internal/reqsig` (Go) and `web/js/api.js` (WebCrypto) produce the same
 signature, and `go test ./internal/reqsig` checks it.
 
-Keys reach the mailbox in this order. Each Mac is a tenant, and every rule
-below is scoped to it.
+Keys reach the server in this order:
 
-1. **A Mac registers once.** `flow-remote setup` posts its id and sign key
-   to `/v1/macs`, in a request signed by that key, so a token or invite
-   alone can't register a different key. It also carries one of:
-   - `X-FR-Setup`, equal to the mailbox's `MAILBOX_SETUP_TOKEN`. This is
-     for the first Mac, which becomes the **admin**.
-   - `X-FR-Invite`, a single-use code from `flow-remote invite` on an admin
-     Mac. It's valid for 24 hours, the mailbox stores only its SHA-256, and
-     it's spent only once the rest of the request checks out.
+1. **The computer is registered** in the server's store when
+   `flow-remote run` starts, as its only tenant.
+2. **The computer opens a pairing slot.** `flow-remote pair` opens a slot
+   for the offer's pair id. The phone posts its enrollment into it, which
+   is the only unsigned call. The server accepts it only if the envelope is
+   addressed to this computer. A slot takes one enrollment, expires after
+   2 minutes, and only the computer can collect it.
+3. **The computer registers the device** once you confirm the fingerprint.
+   The server then accepts requests signed by its key. `flow-remote revoke`
+   revokes it there too, and a revoked id can't be registered again.
 
-   A Mac id keeps its first key. Registering again with the same key needs
-   neither header.
-2. **The Mac opens a pairing slot.** `flow-remote pair` opens a slot for
-   the offer's pair id, owned by that Mac. The phone posts its enrollment
-   into it, which is the only unsigned call. The mailbox accepts it only if
-   the envelope is addressed to the slot's owner. A slot takes one
-   enrollment, expires after 2 minutes, and only its owner can collect it.
-3. **The Mac registers the device** once you confirm the fingerprint. The
-   device is now owned by that Mac, and the mailbox accepts requests signed
-   by its key. `flow-remote revoke` revokes it there too. A revoked id, or
-   another tenant's, can't be registered again.
-
-Scoping, enforced by the mailbox:
-
-- A device sends only as itself, only to its owner Mac, and reads only its
-  own queue and its owner's status.
-- A Mac sends only to devices it owns, and revokes only those.
-- Presence and the relay's poll hint are per tenant.
-- Admin Macs can create invites, list tenants, and remove a tenant, which
-  revokes its devices and deletes its mail. A Mac can't remove itself.
-
-Ids are also checked by prefix: a device key can't call relay endpoints.
+A device sends only as itself, only to the computer, and reads only its
+own queue. Ids are also checked by prefix: a device key can't call the
+computer's routes, which only the unix socket serves anyway.
 
 ## Pairing offer
 
@@ -170,8 +152,7 @@ to show which message a reply answers.
 ## Serving from the computer
 
 `flow-remote run`, with a tunnel set up, runs the mailbox server in the
-same process. It has one tenant, the computer itself, registered at start
-without a setup token. The routes and signatures are the ones above.
+same process. The routes and signatures are the ones above.
 
 - **The tunnel's listener** (Tailscale: `:443` on the tsnet device, with
   TLS ending in the process) serves the app's files and the phone's
@@ -181,7 +162,7 @@ without a setup token. The routes and signatures are the ones above.
   own address.
 - **The unix socket** `~/.flow-remote/mailbox.sock` (mode 0600) serves
   every route. The relay and the CLI (`pair`, `devices`, `revoke`) use it,
-  signing as the computer, as they would with a hosted mailbox.
+  signing as the computer.
 - **CORS** allows the app origins set with `setup --app`, so an app
   installed from one computer can reach another's API. Signatures, not the
   origin, authenticate requests.
