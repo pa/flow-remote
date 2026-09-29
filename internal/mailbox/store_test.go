@@ -213,3 +213,46 @@ func TestMongoContract(t *testing.T) {
 	t.Cleanup(func() { m.envs.Database().Drop(ctx) })
 	contract(t, m)
 }
+
+func TestBoltContract(t *testing.T) {
+	s, err := OpenBolt(t.TempDir()+"/mailbox.db", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	contract(t, s)
+}
+
+// What's in the file survives a restart; a second process can't open it.
+func TestBoltPersists(t *testing.T) {
+	ctx := context.Background()
+	path := t.TempDir() + "/mailbox.db"
+	now := time.Now()
+	s, err := OpenBolt(path, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := envelope.Envelope{V: 1, ID: envelope.NewID(), From: "mac-1", To: "dev-a", TS: now.UnixMilli()}
+	if err := s.PutEnvelope(ctx, e, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutDevice(ctx, "mac-1", "dev-a", "pub"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenBolt(path, 50*time.Millisecond); err == nil {
+		t.Fatal("a second open of a held database succeeded")
+	}
+	s.Close()
+
+	s, err = OpenBolt(path, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if recs, _ := s.ListEnvelopes(ctx, "dev-a", 10, now); len(recs) != 1 || recs[0].Env.ID != e.ID {
+		t.Fatalf("envelope lost across restart: %+v", recs)
+	}
+	if d, err := s.GetDevice(ctx, "dev-a"); err != nil || d.Owner != "mac-1" {
+		t.Fatalf("device lost across restart: %+v %v", d, err)
+	}
+}
