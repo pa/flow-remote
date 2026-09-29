@@ -12,6 +12,7 @@
 import { b64u } from "./envelope.js";
 
 const subtle = globalThis.crypto.subtle;
+const TIMEOUT_MS = 10_000;
 const enc = new TextEncoder();
 
 export class ApiError extends Error {
@@ -38,7 +39,9 @@ async function call(signer, method, path, body, base = signer?.base ?? "") {
   const raw = body ? enc.encode(JSON.stringify(body)) : new Uint8Array();
   const headers = body ? { "Content-Type": "application/json" } : {};
   if (signer) Object.assign(headers, await signHeaders(method, path, raw, signer.id, signer.key));
-  const res = await fetch(base + path, { method, headers, body: body ? raw : undefined, cache: "no-store" });
+  // A Mac that's asleep or off the tailnet may not answer at all; give up
+  // so the app can say it's unreachable instead of waiting.
+  const res = await fetch(base + path, { method, headers, body: body ? raw : undefined, cache: "no-store", signal: AbortSignal.timeout(TIMEOUT_MS) });
   if (!res.ok) {
     let msg = `${res.status}`;
     try { msg = (await res.json()).error || msg; } catch {}
