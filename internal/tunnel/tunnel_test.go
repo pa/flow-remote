@@ -8,11 +8,11 @@ import (
 
 func TestHostname(t *testing.T) {
 	for in, want := range map[string]string{
-		"My Mac":                  "flow-remote-my-mac",
+		"My Mac":                "flow-remote-my-mac",
 		"Sam’S MacBook Pro (2)": "flow-remote-sam-s-macbook-pro-2",
-		"":                        "flow-remote",
-		"---":                     "flow-remote",
-		strings.Repeat("a", 80):   "flow-remote-" + strings.Repeat("a", 51),
+		"":                      "flow-remote",
+		"---":                   "flow-remote",
+		strings.Repeat("a", 80): "flow-remote-" + strings.Repeat("a", 51),
 	} {
 		if got := Hostname(in); got != want {
 			t.Errorf("Hostname(%q) = %q, want %q", in, got, want)
