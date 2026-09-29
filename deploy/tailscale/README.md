@@ -33,35 +33,91 @@ keeps what you type for up to 10 minutes.
 
 ## 1. Prepare the tailnet (once)
 
-In the [Tailscale admin console](https://login.tailscale.com/admin):
+Everything here is in the [Tailscale admin console](https://console.tailscale.com/admin),
+as an Owner or Admin of the tailnet. It takes three settings: DNS with
+HTTPS, a tag in the policy file, and an auth key with that tag. Do them in
+this order, because the key's tag has to exist first.
 
-1. On the **DNS** page, turn on **MagicDNS** and **HTTPS Certificates**. The
-   app needs HTTPS to install and to use the camera.
-2. In **Access controls**, add a tag and a rule letting only your own
-   devices reach it, only on 443. Merge this into your policy:
+### 1a. Turn on MagicDNS and HTTPS certificates
 
-   ```json
-   {
-     "tagOwners": { "tag:flow-remote": ["autogroup:admin"] },
-     "grants": [
-       { "src": ["autogroup:member"], "dst": ["tag:flow-remote"], "ip": ["tcp:443"] }
-     ]
-   }
-   ```
+1. Open **DNS** ([console.tailscale.com/admin/dns](https://console.tailscale.com/admin/dns)).
+2. If MagicDNS is off, select **Enable MagicDNS**.
+3. Under **HTTPS Certificates**, select **Enable HTTPS** and accept the
+   notice.
 
-   If your policy still has the default rule that allows everything, other
-   devices can reach the node on any port. flow-remote only listens on 443,
-   but the rule above is tighter. The node gets no access to your other
-   devices unless a rule grants it.
-3. In **Settings > Keys**, generate an auth key with these settings:
-   - reusable **off**
-   - ephemeral **off**
-   - pre-approved **on**
-   - tag **`tag:flow-remote`**
-   - a short expiry, such as a day
+The app needs HTTPS to install on the phone and to use the camera.
 
-   The key is used once. Tagged devices don't expire after 180 days the
-   way devices logged in by a person do.
+**Read the notice before you accept it.** Every HTTPS certificate is
+recorded in public Certificate Transparency logs. So the device name
+`flow-remote-<name>` and your tailnet's name (`<tailnet>.ts.net`) become
+public. Pick a `--name` in step 2 that says nothing sensitive: not a
+customer, client or project.
+
+### 1b. Add the tag and who can reach it
+
+1. Open **Access controls**
+   ([console.tailscale.com/admin/acls](https://console.tailscale.com/admin/acls))
+   and switch to the JSON editor, which shows the tailnet policy file.
+2. Add `tag:flow-remote` under `tagOwners`, creating that section if it
+   isn't there. This says who may put the tag on a device: admins of the
+   tailnet.
+3. Add a rule under `grants` that lets your own devices reach it on port 443
+   only.
+4. Select **Save**.
+
+After the edit, the relevant parts look like this. Keep your other
+entries, and add these alongside them:
+
+```json
+{
+  "tagOwners": {
+    "tag:flow-remote": ["autogroup:admin"]
+  },
+  "grants": [
+    {
+      "src": ["autogroup:member"],
+      "dst": ["tag:flow-remote"],
+      "ip":  ["tcp:443"]
+    }
+  ]
+}
+```
+
+- `autogroup:member` is every user of the tailnet. On a personal tailnet
+  that's you. To be stricter, list your own login instead, like
+  `"you@example.com"`.
+- A new tailnet's default policy allows every device to reach every other
+  on any port. With that rule still in place, the grant above changes
+  nothing, because everything is already allowed. flow-remote only listens
+  on 443 either way. To limit it, replace the allow-all rule with rules for
+  what you actually use.
+- The tagged device gets no access to your other devices unless a rule
+  grants it. Nothing above does.
+
+Tailscale rejects the save with a message if the file has a mistake. Tag
+names are case-insensitive, so `tag:Flow-Remote` is the same tag.
+
+### 1c. Create the auth key
+
+1. Open **Settings > Keys**
+   ([console.tailscale.com/admin/settings/keys](https://console.tailscale.com/admin/settings/keys))
+   and select **Generate auth key**.
+2. Fill in the form:
+   - **Description:** something like `flow-remote on my laptop`.
+   - **Reusable:** off. One key joins one device.
+   - **Expiration:** 1 day. It only has to work until you run setup.
+   - **Ephemeral:** off. An ephemeral device disappears when it goes
+     offline, and it would when your computer sleeps.
+   - **Tags:** on, and choose `tag:flow-remote`. If it isn't in the list,
+     step 1b wasn't saved.
+   - **Pre-approved:** on. It only shows if device approval is on for your
+     tailnet, and it lets the device join without a manual approval.
+3. Select **Generate key** and copy the key, which starts with
+   `tskey-auth-`. Treat it like a password until you've used it. It's shown
+   once.
+
+Tagged devices belong to the tailnet rather than to a person, so their
+node key doesn't expire after 180 days the way a person's devices do.
 
 ## 2. Set up the computer
 
@@ -75,9 +131,14 @@ the HTTPS certificate once, and prints the address phones will use. The key
 isn't saved. After the first join the device's identity lives in
 `~/.flow-remote/tailscale`, which is created with mode 0700.
 
-The name becomes part of the app's address, and the phone's storage is tied
-to that address. So choose it once: running setup again keeps the name it
-already has.
+The name becomes part of the app's address, and the phone's storage is
+tied to that address. So choose it once: running setup again keeps the
+name it already has. The name also becomes public through the certificate
+logs (see 1a).
+
+To check it worked, open **Machines** in the admin console. You should see
+`flow-remote-<name>` with the `tag:flow-remote` tag. Its expiry column
+should say key expiry is disabled, which is normal for tagged devices.
 
 Then:
 

@@ -78,8 +78,10 @@ In the Tailscale admin console, do three things:
   on port 443
 - create a single-use auth key with that tag
 
-[deploy/tailscale](deploy/tailscale) has the exact settings and a policy to
-paste in.
+[deploy/tailscale](deploy/tailscale) walks through each page, the exact
+settings and a policy to paste in. One thing to know first: HTTPS
+certificates publish device names in public logs, so the name you give the
+computer in the next step shouldn't say anything sensitive.
 
 ## 3. Set up the computer
 
