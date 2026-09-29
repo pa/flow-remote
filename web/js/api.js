@@ -1,7 +1,9 @@
 // The phone's side of the mailbox API. Nobody signs in: after pairing,
 // every request is signed with that pairing's device key, byte for byte the
 // way internal/reqsig does it in Go. Pairing itself is the one unsigned
-// call. The app and mailbox share an origin, so paths are relative.
+// call. A Mac's mailbox is usually the app's own origin (base ""); a Mac
+// served from another address has its https base stored with the pairing.
+// Only the path is signed, so the base doesn't change the signature.
 //
 // Each call takes its signer ({id, key}) explicitly. A phone paired with
 // several Macs has one device key per Mac, and a shared "current signer"
@@ -32,11 +34,11 @@ export async function signHeaders(method, path, body, id, key, ts = Date.now()) 
   return { "X-FR-Key": id, "X-FR-TS": String(ts), "X-FR-Sig": b64u(sig) };
 }
 
-async function call(signer, method, path, body) {
+async function call(signer, method, path, body, base = signer?.base ?? "") {
   const raw = body ? enc.encode(JSON.stringify(body)) : new Uint8Array();
   const headers = body ? { "Content-Type": "application/json" } : {};
   if (signer) Object.assign(headers, await signHeaders(method, path, raw, signer.id, signer.key));
-  const res = await fetch(path, { method, headers, body: body ? raw : undefined, cache: "no-store" });
+  const res = await fetch(base + path, { method, headers, body: body ? raw : undefined, cache: "no-store" });
   if (!res.ok) {
     let msg = `${res.status}`;
     try { msg = (await res.json()).error || msg; } catch {}
@@ -45,9 +47,22 @@ async function call(signer, method, path, body) {
   return res.status === 204 || res.status === 202 ? null : res.json();
 }
 
-export const signerFor = (pairing) => ({ id: pairing.device_id, key: pairing.keys.sign.privateKey });
+export const signerFor = (pairing) => ({ id: pairing.device_id, key: pairing.keys.sign.privateKey, base: pairing.mailbox || "" });
 
-export const postPair = (pairId, env) => call(null, "POST", `/v1/pair/${encodeURIComponent(pairId)}`, env);
+// mailboxBase checks an offer's mailbox address: "" (this origin) or https.
+export function mailboxBase(offer) {
+  const m = offer.mailbox || "";
+  if (m === "") return "";
+  const u = new URL(m);
+  if (u.protocol !== "https:") throw new Error("pairing: the Mac's address must be https");
+  return u.origin;
+}
+
+// offline says whether err means the Mac couldn't be reached at all, as
+// opposed to answering with an error.
+export const offline = (err) => !(err instanceof ApiError);
+
+export const postPair = (base, pairId, env) => call(null, "POST", `/v1/pair/${encodeURIComponent(pairId)}`, env, base);
 export const postEnvelope = (signer, env) => call(signer, "POST", "/v1/envelopes", env);
 export const listEnvelopes = (signer) => call(signer, "GET", "/v1/envelopes");
 export const ack = (signer, ids) => call(signer, "POST", "/v1/ack", { ids });

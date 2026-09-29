@@ -63,6 +63,18 @@ type Relay struct {
 	sessionsHash string
 	sessionsAt   time.Time
 	devicesAt    time.Time // last registry re-read
+	devicesSeen  string    // active device ids when the list last went out
+}
+
+// activeDevices is the enrolled, unrevoked device ids, as one string.
+func (r *Relay) activeDevices() string {
+	var ids []string
+	for _, d := range r.Devices.List() {
+		if !d.Revoked() {
+			ids = append(ids, d.ID)
+		}
+	}
+	return strings.Join(ids, ",")
 }
 
 const (
@@ -106,6 +118,11 @@ func (r *Relay) Tick(ctx context.Context) (time.Duration, error) {
 	}
 	if err := r.Mailbox.Ack(ctx, acks); err != nil {
 		r.log("ack failed", "err", err)
+	}
+	// A phone paired since the last list went out gets one now, not when
+	// the sessions next change.
+	if devs := r.activeDevices(); devs != r.devicesSeen {
+		r.devicesSeen, forceSessions = devs, true
 	}
 	if err := r.syncSessions(ctx, forceSessions); err != nil {
 		r.log("sessions", "err", err)

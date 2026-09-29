@@ -26,6 +26,7 @@ const state = {
   active: null, // mac_id of the pairing on screen
   sessions: {}, // mac_id -> [session]
   macSeen: {}, // mac_id -> Date | null
+  unreachable: {}, // mac_id -> true while that Mac doesn't answer at all
   view: "sessions",
   task: null,
   offer: null,
@@ -252,7 +253,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v19";
+const BUILD = "v21";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -691,7 +692,8 @@ async function pair(offer, name) {
   const keys = await generateIdentity(false);
   const deviceId = newDeviceId();
   const env = await enrollmentEnvelope(offer, keys, deviceId, name);
-  await api.postPair(offer.pair_id, env);
+  const mailbox = api.mailboxBase(offer);
+  await api.postPair(mailbox, offer.pair_id, env);
   const pub = await exportPublic(keys);
   // Pairing again after a revocation replaces the dead pairing. Threads are
   // stored by Mac, so the history comes back with the new key.
@@ -699,7 +701,7 @@ async function pair(offer, name) {
   state.pairings.push({
     mac_id: offer.mac_id, mac_sign_pub: offer.mac_sign_pub, mac_box_pub: offer.mac_box_pub,
     device_id: deviceId, device_fp: await fingerprint(pub.sign_pub, pub.box_pub),
-    confirmed: false, rejected: false, keys,
+    confirmed: false, rejected: false, keys, mailbox,
   });
   state.active = offer.mac_id;
   await savePairings();
@@ -719,6 +721,7 @@ function waitingScreen(p) {
 // macOffline: the Mac hasn't checked in for a while, so the session list
 // is only the last one it sent, and "live" can't be trusted.
 function macOffline(p) {
+  if (state.unreachable[p.mac_id]) return true;
   const seen = state.macSeen[p.mac_id];
   if (seen === undefined) return false; // not checked yet
   return seen === null || Date.now() - seen.getTime() > ONLINE_MS;
@@ -729,6 +732,9 @@ function macLine(p) {
     return h("span", { class: "status warn" }, "This Mac revoked this phone. ",
       h("button", { class: "inline", onclick: () => go("welcome") }, "Pair again"),
       " to reconnect with a new key; your messages stay.");
+  }
+  if (state.unreachable[p.mac_id]) {
+    return h("span", { class: "status warn" }, "Can't reach this Mac. It may be asleep, or this phone is offline. Messages wait here and go when it's back.");
   }
   const s = state.macSeen[p.mac_id];
   if (s === undefined) return h("span", { class: "status" }, "Checking the Mac…");
@@ -881,7 +887,7 @@ function threadScreen(p) {
         h("div", { class: "bubble them" }, it.urgent ? h("span", { class: "chip urgent" }, "urgent") : null, it.body),
         h("span", { class: "meta" }, `${clock(it.ts)}${it.broadcast ? " · broadcast" : ""}`));
     }
-    const label = { sending: "sending…", sent: "sent, waiting for the Mac", delivered: "in the session's inbox", refused: "refused", failed: "failed", stale: "not delivered", resent: "sent again below" }[it.state] || it.state;
+    const label = { sending: "sending…", queued: "waiting for the Mac to be reachable", sent: "sent, waiting for the Mac", delivered: "in the session's inbox", refused: "refused", failed: "failed", stale: "not delivered", resent: "sent again below" }[it.state] || it.state;
     const bad = it.state === "refused" || it.state === "failed" || it.state === "stale";
     return h("div", { class: "msg out" },
       h("div", { class: "bubble me" }, it.body),
@@ -999,7 +1005,7 @@ async function forgetEverything() {
   if (!confirm("Delete every pairing and all message history from this phone?")) return;
   stopPolling();
   await db.forget();
-  Object.assign(state, { pairings: [], active: null, sessions: {}, macSeen: {} });
+  Object.assign(state, { pairings: [], active: null, sessions: {}, macSeen: {}, unreachable: {} });
   itemsCache = [];
   go("welcome");
 }
@@ -1016,16 +1022,47 @@ async function send(p, task, body, replyTo) {
   await db.putItem(item);
   itemsCache = await db.allItems();
   render();
+  await post(p, item);
+}
+
+// A message waits on the phone this long for an unreachable Mac, then
+// needs "Send again": the same rule the Mac applies to one that waited in
+// a mailbox, so an old "yes, go ahead" isn't delivered by surprise.
+const QUEUE_MS = 10 * 60_000;
+
+// post seals and sends one outgoing item. If the Mac can't be reached (it's
+// asleep, or the phone is offline) the item stays queued and goes out on
+// the next successful poll.
+async function post(p, item) {
+  const clientId = item.id.slice(2);
   try {
-    await api.postEnvelope(api.signerFor(p), await sealToMac(p, { kind: "send", client_id: clientId, task, body, reply_to: replyTo || undefined }));
+    await api.postEnvelope(api.signerFor(p), await sealToMac(p, { kind: "send", client_id: clientId, task: item.task, body: item.body, reply_to: item.reply_to || undefined }));
     item.state = "sent";
+    delete item.reason;
   } catch (e) {
-    item.state = "failed";
-    item.reason = e.message;
+    if (api.offline(e)) {
+      item.state = "queued";
+    } else {
+      item.state = "failed";
+      item.reason = e.message;
+    }
   }
   await db.putItem(item);
   itemsCache = await db.allItems();
   render();
+}
+
+// flushQueued sends what waited for p's Mac, once it answers again.
+async function flushQueued(p) {
+  for (const it of itemsCache.filter((x) => x.mac === p.mac_id && x.state === "queued")) {
+    if (Date.now() - it.ts > QUEUE_MS) {
+      it.state = "stale";
+      it.reason = "it waited too long for the Mac";
+      await db.putItem(it);
+      continue;
+    }
+    await post(p, it);
+  }
 }
 
 async function sendSync(p) {
@@ -1119,11 +1156,20 @@ async function pollPairing(p, withStatus) {
       state.macSeen[p.mac_id] = seen ? new Date(seen) : null;
     }
     p.rejected = false;
-    return ids.length > 0;
+    const back = state.unreachable[p.mac_id] === true;
+    state.unreachable[p.mac_id] = false;
+    if (p.confirmed) await flushQueued(p);
+    return ids.length > 0 || back; // redraw when it comes back, too
   } catch (e) {
     // Before the Mac confirms pairing, the mailbox doesn't know this
     // device yet, so 401 is expected. After that it means revoked.
     if (e.status === 401 && p.confirmed) p.rejected = true;
+    // A Mac that serves the phone itself can't be reached while it's
+    // asleep: show it offline straight away.
+    if (api.offline(e) && p.confirmed && !state.unreachable[p.mac_id]) {
+      state.unreachable[p.mac_id] = true;
+      return true; // redraw now, not on the next status check
+    }
     return false;
   }
 }
@@ -1213,6 +1259,9 @@ async function loadState() {
 
 async function boot() {
   registerServiceWorker();
+  // Ask the browser to keep the app's storage (keys and history) when the
+  // device runs low on space. iOS keeps an installed app's storage anyway.
+  navigator.storage?.persist?.().catch(() => {});
   const offer = (() => {
     try { return parseOffer(location.hash); } catch { return null; }
   })();

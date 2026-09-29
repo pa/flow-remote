@@ -234,7 +234,10 @@ func setupLocal(tun, listen, public, app, name string) error {
 	if tun != "none" {
 		return fmt.Errorf("--tunnel %q: want none", tun)
 	}
-	if !strings.HasPrefix(public, "https://") {
+	// Browsers treat localhost as secure, so http is fine there for trying
+	// it out; anywhere else the app needs https to install and use the
+	// camera.
+	if !strings.HasPrefix(public, "https://") && !strings.HasPrefix(public, "http://localhost:") && !strings.HasPrefix(public, "http://127.0.0.1:") {
 		return errors.New("--public-url must be the https address phones use; the app needs HTTPS to install and to use the camera")
 	}
 	c := config{Tunnel: tun, Listen: listen, PublicURL: strings.TrimRight(public, "/"), App: strings.TrimRight(app, "/"), Name: name}
