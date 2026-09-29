@@ -203,3 +203,5 @@ main { will-change: auto; }
 .meta { padding: 2px 6px 0; }
 .divider { align-self: center; font-size: 12px; font-weight: 500; color: var(--muted); margin: 14px 0 8px; }
 .threadview .bar .status { font-size: 12.5px; }
+/* The composer's wrapper takes no space of its own. */
+.composer-slot { display: contents; }

@@ -265,7 +265,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v28";
+const BUILD = "v30";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -371,6 +371,7 @@ function updateAppBadge() {
 // What the last render put on screen, to skip renders that change nothing.
 let shownView = null;
 let shownHTML = "";
+let shownComposer = "";
 
 // render redraws the current screen. It builds the screen fresh, but only
 // swaps it in if it differs from what's showing, and keeps the scroll
@@ -381,8 +382,35 @@ function render({ stickToBottom = false } = {}) {
   const next = screen();
   const toast = state.toast ? toastView(state.toast) : null;
   const html = next.outerHTML + (toast ? toast.outerHTML : "");
-  const sameView = shownView === state.view;
+  const view = state.view === "thread" ? `thread:${state.active}:${state.task}` : state.view;
+  const sameView = shownView === view;
   if (sameView && html === shownHTML) return;
+
+  // In the same thread, keep the composer that's on screen unless it
+  // changed: replacing it drops focus, and on a phone the keyboard then
+  // hides and comes back, which makes the page jump.
+  const slot = next.querySelector(".composer-slot");
+  // The placeholder follows the computer's status; that alone isn't a
+  // reason to replace the field someone may be typing in.
+  const composerKey = slot ? slot.outerHTML.replace(/ placeholder="[^"]*"/, "") : "";
+  const oldMain = root.querySelector("main.threadview");
+  if (sameView && slot && oldMain && composerKey === shownComposer) {
+    const nextTa = slot.querySelector("textarea"), liveTa = oldMain.querySelector(".composer-slot textarea");
+    if (nextTa && liveTa) liveTa.placeholder = nextTa.placeholder;
+    const list = oldMain.querySelector(".thread");
+    const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 48;
+    const top = list.scrollTop;
+    const nextList = next.querySelector(".thread");
+    oldMain.replaceChild(next.querySelector("header"), oldMain.querySelector("header"));
+    oldMain.replaceChild(nextList, list);
+    nextList.scrollTop = stickToBottom || atBottom ? nextList.scrollHeight : top;
+    root.querySelector(".toast")?.remove();
+    if (toast) root.append(toast);
+    shownHTML = html;
+    updateAppBadge();
+    return;
+  }
+  shownComposer = composerKey;
 
   // Keep a half-typed message, and the search box, with their focus.
   const ta = root.querySelector("textarea");
@@ -397,7 +425,7 @@ function render({ stickToBottom = false } = {}) {
 
   root.replaceChildren(next);
   if (toast) root.append(toast);
-  shownView = state.view;
+  shownView = view;
   shownHTML = html;
   document.documentElement.classList.toggle("in-thread", state.view === "thread");
   updateAppBadge();
@@ -1022,7 +1050,9 @@ function threadScreen(p) {
   return h("main", { class: "threadview" },
     bar(task, { back: goBack, backCount: itemsCache.filter((it) => it.dir === "in" && !it.read && !(it.mac === p.mac_id && it.task === task)).length, sub: h("span", { class: offline ? "status warn" : session ? "status ok" : "status" }, [macLabel(p), offline ? "offline" : session ? "live" : "not running", session?.project].filter(Boolean).join(" · ")) }),
     h("div", { class: "thread" }, items.length ? items.map(bubble) : h("p", { class: "muted pad" }, "No messages yet.")),
-    composer);
+    // render() keeps this slot's element across renders while its markup
+    // is unchanged, so the field keeps focus and the keyboard stays up.
+    h("div", { class: "composer-slot" }, composer));
 }
 
 function envLabel() {
