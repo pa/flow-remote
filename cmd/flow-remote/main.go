@@ -33,6 +33,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -474,10 +475,16 @@ func revoke(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := devs.Revoke(args[0], time.Now()); err != nil {
-		return err
+	if _, known := devs.Active(args[0]); !known && !slices.ContainsFunc(devs.List(), func(d identity.Device) bool { return d.ID == args[0] }) {
+		// Not in this Mac's list, e.g. lost from a damaged registry. The
+		// mailbox may still accept it, so revoke it there anyway.
+		fmt.Printf("%s isn't in this Mac's device list; revoking it on the mailbox only.\n", args[0])
+	} else {
+		if err := devs.Revoke(args[0], time.Now()); err != nil {
+			return err
+		}
+		fmt.Printf("revoked %s. The relay rejects everything it signs from now on.\n", args[0])
 	}
-	fmt.Printf("revoked %s. The relay rejects everything it signs from now on.\n", args[0])
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
@@ -487,7 +494,10 @@ func revoke(args []string) error {
 		return err
 	}
 	mb := &client.Client{BaseURL: cfg.Mailbox, Mac: mac}
-	if err := mb.RevokeDevice(context.Background(), args[0]); err != nil {
+	if err := mb.RevokeDevice(context.Background(), args[0]); errors.Is(err, client.ErrNotFound) {
+		fmt.Println("the mailbox doesn't have it either; nothing more to do.")
+		return nil
+	} else if err != nil {
 		fmt.Printf("the mailbox didn't get the revocation (%v); the relay retries it when it next starts.\n", err)
 		return nil
 	}
