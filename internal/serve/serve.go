@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"net"
 	"net/http"
@@ -140,7 +141,9 @@ func Run(ctx context.Context, o Options) error {
 	}
 
 	public := newServer(cors(dropForwarded(webapp.Handler(srv.PublicHandler(), web.Files)), allowedOrigins(publicURL, o.Origins)))
+	public.ErrorLog = serverLog(o.Log)
 	local := newServer(srv.Handler())
+	local.ErrorLog = serverLog(o.Log)
 	errc := make(chan error, 3)
 	go func() { errc <- public.Serve(pl) }()
 	go func() { errc <- local.Serve(sl) }()
@@ -162,6 +165,27 @@ func Run(ctx context.Context, o Options) error {
 	local.Shutdown(sctx)
 	return err
 }
+
+// serverLog sends net/http's own messages to the log, minus handshakes a
+// client abandoned: a phone that gives up on a request, goes to the
+// background, or opens a spare connection closes it before TLS finishes,
+// and that isn't a problem.
+func serverLog(l *slog.Logger) *log.Logger {
+	return log.New(writerFunc(func(p []byte) (int, error) {
+		msg := strings.TrimSpace(string(p))
+		if strings.Contains(msg, "TLS handshake error") && (strings.HasSuffix(msg, ": EOF") || strings.Contains(msg, "connection reset")) {
+			return len(p), nil
+		}
+		if l != nil {
+			l.Warn("http", "msg", msg)
+		}
+		return len(p), nil
+	}), "", 0)
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 
 // Timeouts so slow clients can't hold connections open.
 func newServer(h http.Handler) *http.Server {
