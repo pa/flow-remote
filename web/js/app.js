@@ -265,7 +265,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v34";
+const BUILD = "v35";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -861,16 +861,24 @@ function sessionsScreen(p) {
     const m = it.dir === "out" ? lastOut : lastIn;
     if (!m[it.task] || it.ts > m[it.task].ts) m[it.task] = it;
   }
+  // How many of your delivered messages to slug came after its last reply.
+  const waitingCount = (slug) => {
+    const since = lastIn[slug]?.ts || 0;
+    return mine.filter((it) => it.task === slug && it.dir === "out" && it.state === "delivered" && it.ts > since).length;
+  };
   const awaiting = (slug) => {
     const o = lastOut[slug];
     if (!o || o.state === "resent" || (lastIn[slug]?.ts || 0) > o.ts || Date.now() - o.ts > WAIT_MS) return null;
     return o;
   };
   const BAD = ["refused", "failed", "stale"];
-  const pendingLine = (o) => h("span", { class: `pending${BAD.includes(o.state) ? " bad" : ""}` }, {
-    sending: "Sending…", queued: "Waiting for the computer to be reachable", sent: "Sent, waiting for the computer",
-    delivered: "In the session's inbox · waiting for a reply",
-  }[o.state] || "Not delivered · open to see why");
+  const pendingLine = (o) => {
+    const n = waitingCount(o.task);
+    return h("span", { class: `pending${BAD.includes(o.state) ? " bad" : ""}` }, {
+      sending: "Sending…", queued: "Waiting for the computer to be reachable", sent: "Sent, waiting for the computer",
+      delivered: n > 1 ? `${n} messages waiting in the session's inbox` : "In the session's inbox · waiting for a reply",
+    }[o.state] || "Not delivered · open to see why");
+  };
   // group puts rows in one card under a heading; nothing if there are none.
   const group = (title, rows, kind = "") => rows.length ? [
     title ? h("h2", { class: `section ${kind}` }, title) : null,
@@ -979,6 +987,11 @@ function threadScreen(p) {
   const RUN_MS = 5 * 60_000;
   const GAP_MS = 60 * 60_000;
   const sameRun = (a, b) => a && b && a.dir === b.dir && Math.abs(b.ts - a.ts) < RUN_MS;
+  // Your delivered messages the session hasn't replied after are still in
+  // its queue, as far as anyone can tell: flow doesn't say when a session
+  // reads its inbox (Facets-cloud/flow#100), but a reply means it did.
+  const lastReply = Math.max(0, ...items.filter((it) => it.dir === "in").map((it) => it.ts));
+  const waiting = items.filter((it) => it.dir === "out" && it.state === "delivered" && it.ts > lastReply);
   const bubble = (it, i) => {
     const prev = items[i - 1], next = items[i + 1];
     const last = !sameRun(it, next);
@@ -989,12 +1002,14 @@ function threadScreen(p) {
         h("div", { class: "bubble them" }, it.urgent ? h("span", { class: "chip urgent" }, "urgent") : null, it.body),
         last || it.broadcast ? h("span", { class: "meta" }, `${clock(it.ts)}${it.broadcast ? " · broadcast" : ""}`) : null)];
     }
-    const label = { sending: "sending…", queued: "waiting for the computer to be reachable", sent: "sent, waiting for the computer", delivered: "in the session's inbox", refused: "refused", failed: "failed", stale: "not delivered", resent: "sent again below" }[it.state] || it.state;
+    const place = waiting.indexOf(it);
+    const inQueue = place < 0 ? "delivered" : waiting.length > 1 ? `waiting in the session's inbox · ${place + 1} of ${waiting.length}` : "waiting in the session's inbox";
+    const label = { sending: "sending…", queued: "waiting for the computer to be reachable", sent: "sent, waiting for the computer", delivered: inQueue, refused: "refused", failed: "failed", stale: "not delivered", resent: "sent again below" }[it.state] || it.state;
     const bad = it.state === "refused" || it.state === "failed" || it.state === "stale";
     // Each message's own fate matters, so anything but "delivered" shows
     // even mid-run.
-    const showMeta = last || it.state !== "delivered";
-    return [divider, h("div", { class: `msg out${run}` },
+    const showMeta = last || it.state !== "delivered" || place >= 0;
+    return [divider, h("div", { class: `msg out${run}${place >= 0 ? " queued" : ""}` },
       h("div", { class: "bubble me" }, it.body),
       showMeta ? h("span", { class: `meta ${bad ? "bad" : ""}` },
         `${clock(it.ts)} · ${label}${it.reason ? ` · ${it.reason}` : ""}`) : null,
