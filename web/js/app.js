@@ -265,7 +265,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v30";
+const BUILD = "v31";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -860,15 +860,37 @@ function sessionsScreen(p) {
   // A dot says whether you can message the session; a word says why not.
   const row = (slug, sub, chip, chipClass, marks = {}, where = "") => {
     const n = unreadCount(p.mac_id, slug);
+    const o = awaiting(slug);
+    const busy = o && !BAD.includes(o.state) ? " busy" : "";
     return h("button", { class: "row", onclick: () => openThread(slug) },
       h("div", { class: "top" },
-        h("span", { class: `dot ${chipClass}`, title: chip, "aria-label": chip }),
+        h("span", { class: `dot ${chipClass}${busy}`, title: chip, "aria-label": chip }),
         h("span", { class: "slug" }, hl(slug, marks.slug)),
         n ? h("span", { class: "badge" }, n) : null,
         chipClass === "live" ? null : h("span", { class: "state" }, chip)),
       sub ? h("span", { class: "sub" }, hl(sub, marks.sub)) : null,
-      where ? h("span", { class: "where" }, hl(where, marks.where)) : null);
+      where ? h("span", { class: "where" }, hl(where, marks.where)) : null,
+      o ? pendingLine(o) : null);
   };
+  // Your latest message to a session, while no reply has come after it:
+  // the main screen shows where it is. flow can't say yet whether the
+  // session has read it, so "waiting for a reply" is as far as it goes.
+  const WAIT_MS = 12 * 3600_000;
+  const lastOut = {}, lastIn = {};
+  for (const it of mine) {
+    const m = it.dir === "out" ? lastOut : lastIn;
+    if (!m[it.task] || it.ts > m[it.task].ts) m[it.task] = it;
+  }
+  const awaiting = (slug) => {
+    const o = lastOut[slug];
+    if (!o || o.state === "resent" || (lastIn[slug]?.ts || 0) > o.ts || Date.now() - o.ts > WAIT_MS) return null;
+    return o;
+  };
+  const BAD = ["refused", "failed", "stale"];
+  const pendingLine = (o) => h("span", { class: `pending${BAD.includes(o.state) ? " bad" : ""}` }, {
+    sending: "Sending…", queued: "Waiting for the computer to be reachable", sent: "Sent, waiting for the computer",
+    delivered: "In the session's inbox · waiting for a reply",
+  }[o.state] || "Not delivered · open to see why");
   // group puts rows in one card under a heading; nothing if there are none.
   const group = (title, rows, kind = "") => rows.length ? [
     title ? h("h2", { class: `section ${kind}` }, title) : null,
@@ -937,7 +959,9 @@ function sessionsScreen(p) {
           s ? (whereOf(s) ? h("span", { class: "where" }, whereOf(s)) : null) : h("span", { class: "sub" }, "not running"));
       }), "new"),
       live.length ? null : h("p", { class: "muted pad" }, "No live sessions reported yet."),
-      group(replied.length ? "Sessions" : "", live.filter((s) => !repliedSet.has(s.slug)).map((s) => liveRow(s))),
+      group("Waiting for a reply", live.filter((s) => !repliedSet.has(s.slug) && awaiting(s.slug)).map((s) => liveRow(s)), "wait"),
+      group(replied.length || live.some((s) => awaiting(s.slug)) ? "Sessions" : "",
+        live.filter((s) => !repliedSet.has(s.slug) && !awaiting(s.slug)).map((s) => liveRow(s))),
       group("Not running", earlier.filter((t) => !repliedSet.has(t)).map((slug) => row(slug, "", "not running", "off"))),
     ];
   }
@@ -1064,8 +1088,6 @@ function envLabel() {
 function settingsScreen() {
   return h("main", {},
     bar("Settings", { back: goBack }),
-    h("div", { class: "about" }, brandMark(),
-      h("p", { class: "muted" }, "Running on: ", envLabel(), ` · build ${BUILD}`)),
     h("div", { class: "pad" }, h("button", {
       class: "link",
       onclick: () => {
@@ -1085,7 +1107,25 @@ function settingsScreen() {
         h("code", {}, `flow-remote revoke ${p.device_id}`), " on it."))),
     h("div", { class: "pad stack" },
       h("button", { class: "primary", onclick: () => go("welcome") }, "Pair another computer"),
-      h("button", { class: "link", onclick: forgetEverything }, "Delete everything on this phone")));
+      h("button", { class: "link", onclick: forgetEverything }, "Delete everything on this phone")),
+    aboutSection());
+}
+
+const REPO = "https://github.com/pa/flow-remote";
+
+// A link that leaves the app, without telling the other site where from.
+const outLink = (href, text) => h("a", { href, target: "_blank", rel: "noopener noreferrer" }, text);
+
+function aboutSection() {
+  return h("section", { class: "about" },
+    brandMark(),
+    h("h2", {}, "flow-remote"),
+    h("p", { class: "muted" }, `Build ${BUILD} · running on `, envLabel()),
+    h("p", { class: "muted" }, "Message your ", outLink("https://github.com/Facets-cloud/flow", "flow"), " sessions from your phone. End-to-end encrypted, MIT licensed."),
+    h("div", { class: "about-links" },
+      outLink(REPO, "Source on GitHub"),
+      outLink(REPO, "★ Star it on GitHub"),
+      outLink(`${REPO}/issues/new`, "Report a problem")));
 }
 
 // unpair forgets this phone's key for a Mac but keeps its threads, so
