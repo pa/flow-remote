@@ -253,7 +253,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v22";
+const BUILD = "v23";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -1158,6 +1158,9 @@ async function pollPairing(p, withStatus) {
     p.rejected = false;
     const back = state.unreachable[p.mac_id] === true;
     state.unreachable[p.mac_id] = false;
+    // The Mac serves the app too, so a build published while it was
+    // unreachable can only be fetched now.
+    if (back) checkForUpdate();
     if (p.confirmed) await flushQueued(p);
     return ids.length > 0 || back; // redraw when it comes back, too
   } catch (e) {
@@ -1220,14 +1223,24 @@ document.addEventListener("visibilitychange", () => {
 // An installed app keeps running the code it loaded, possibly for days, so
 // check for a new version each time it comes to the front, and reload onto
 // it as soon as it takes over. Not while typing: that would lose a draft.
+let checkForUpdate = () => {};
+
 function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) return;
   const hadController = Boolean(navigator.serviceWorker.controller);
-  navigator.serviceWorker.register("./sw.js").then((reg) => {
-    document.addEventListener("visibilitychange", () => {
-      if (!document.hidden) reg.update().catch(() => {});
-    });
+  // If the app opened while the Mac was unreachable, registering fails
+  // too; checkForUpdate tries again, and runs whenever the Mac is back.
+  const register = () => navigator.serviceWorker.register("./sw.js").then((reg) => {
+    checkForUpdate = () => reg.update().catch(() => {});
   }).catch(() => {});
+  checkForUpdate = register;
+  register();
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) checkForUpdate();
+  });
+  // An app left open on screen never comes "to the front" again, so also
+  // look every few minutes. It's one small request for sw.js.
+  setInterval(() => { if (!document.hidden) checkForUpdate(); }, 5 * 60_000);
   let reloading = false;
   navigator.serviceWorker.addEventListener("controllerchange", () => {
     if (!hadController || reloading) return; // first install: nothing to replace
