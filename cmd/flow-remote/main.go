@@ -438,20 +438,31 @@ func devices(args []string) error {
 	return nil
 }
 
+// ago says how long ago t was, to the second, with the clock time, so
+// "last seen" isn't rounded down to a whole minute or hour.
 func ago(t time.Time) string {
-	d := time.Since(t)
-	switch {
-	case d < 5*time.Second:
-		return "just now"
-	case d < time.Minute:
-		return fmt.Sprintf("%ds ago", int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
-	case d < 48*time.Hour:
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
-	default:
-		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	d := time.Since(t).Round(time.Second)
+	if d < 0 {
+		d = 0 // the mailbox's clock is slightly ahead of ours
 	}
+	var rel string
+	switch {
+	case d < 2*time.Second:
+		rel = "just now"
+	case d < time.Minute:
+		rel = fmt.Sprintf("%ds ago", int(d.Seconds()))
+	case d < time.Hour:
+		rel = fmt.Sprintf("%dm %ds ago", int(d.Minutes()), int(d.Seconds())%60)
+	case d < 48*time.Hour:
+		rel = fmt.Sprintf("%dh %dm ago", int(d.Hours()), int(d.Minutes())%60)
+	default:
+		rel = fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
+	format := "15:04:05"
+	if d >= 24*time.Hour {
+		format = "Jan 2 15:04"
+	}
+	return rel + " (" + t.Local().Format(format) + ")"
 }
 
 func revoke(args []string) error {
