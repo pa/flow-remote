@@ -22,7 +22,7 @@ the choices and the tools we compared against.
 - **Mailbox:** stores sealed envelopes until they're collected. Every call
   is signed; there's no login.
 - **Relay** (`flow-remote start`): checks the signature and replay list, opens the envelope,
-  applies `~/.flow-remote/allow.txt`, and runs `flow message`. Session mail
+  and runs `flow message`. Session mail
   goes back to the phone the same way.
 
 The database exists because the phone and Mac are rarely online together
@@ -42,7 +42,7 @@ no message text or private keys.
 | Pub/Sub streaming pull later | the Mac needs a credential scoped to one subscription; skoop can't issue one yet (reported) |
 | Each Mac a tenant; invites, not a shared token | your other Macs and other people's are separate by construction; an invite registers exactly one Mac |
 | Mailbox is a plain container; deploy targets in `deploy/` | skoop is one host among several (see deploy/skoop, deploy/docker) |
-| Every live session reachable (`*` in allow.txt) | the user's choice; it overrides the brief's customer-session exclusion, so customer sessions with skipped permissions will act on phone messages |
+| Every live session reachable; no allowlist | the user's choice (2026-09-29). Any paired phone can message any live session, customer sessions with skipped permissions included, so revoking a lost phone is the only limit |
 
 ## Prior art we checked
 

@@ -57,7 +57,8 @@ type Session struct {
 	Project   string   `json:"project,omitempty"`
 	Tags      []string `json:"tags,omitempty"`
 	WaitingOn string   `json:"waiting_on,omitempty"`
-	// CanSend is true when the Mac's allowlist lets the phone message it.
+	// CanSend is always true now: any paired phone may message any live
+	// session. Kept for apps from before the allowlist was removed.
 	CanSend bool `json:"can_send"`
 }
 

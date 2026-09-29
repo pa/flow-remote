@@ -187,7 +187,7 @@ func TestServeEndToEnd(t *testing.T) {
 	guard, _ := envelope.LoadGuard(filepath.Join(home, "seen.json"))
 	state, _ := relay.LoadState(filepath.Join(home, "forwarded.json"))
 	flow := &fakeFlow{}
-	r := &relay.Relay{Mac: mac, Devices: devs, Guard: guard, Allow: relay.ParseAllowlist("demo"), State: state, Flow: flow}
+	r := &relay.Relay{Mac: mac, Devices: devs, Guard: guard, State: state, Flow: flow}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	listening := make(chan string, 1)
@@ -297,7 +297,7 @@ func TestServeHoldsTheDatabase(t *testing.T) {
 	mk := func() *relay.Relay {
 		g, _ := envelope.LoadGuard(filepath.Join(home, "seen.json"))
 		s, _ := relay.LoadState(filepath.Join(home, "forwarded.json"))
-		return &relay.Relay{Mac: mac, Devices: devs, Guard: g, Allow: relay.ParseAllowlist(""), State: s, Flow: &fakeFlow{}}
+		return &relay.Relay{Mac: mac, Devices: devs, Guard: g, State: s, Flow: &fakeFlow{}}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -385,7 +385,7 @@ func TestTunnelSeesOnlySealedEnvelopes(t *testing.T) {
 	guard, _ := envelope.LoadGuard(filepath.Join(home, "seen.json"))
 	state, _ := relay.LoadState(filepath.Join(home, "forwarded.json"))
 	flow := &namedFlow{fakeFlow: &fakeFlow{}, name: sessionName}
-	r := &relay.Relay{Mac: mac, Devices: devs, Guard: guard, Allow: relay.ParseAllowlist("demo"), State: state, Flow: flow}
+	r := &relay.Relay{Mac: mac, Devices: devs, Guard: guard, State: state, Flow: flow}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	listening := make(chan string, 1)

@@ -122,17 +122,10 @@ debugging. Only one relay runs at a time.
 4. Check that the fingerprints on the two screens match, and type `y` on
    the computer.
 
-The phone now lists your live sessions. Sessions in
-`~/.flow-remote/allow.txt` accept messages; the rest are read-only:
-
-```
-phone-dispatch     # a task slug
-#personal          # every live task with this tag
-*                  # every live session
-```
-
-The relay reads this file when it starts, so run `flow-remote start` again
-after changing it.
+The phone now lists your live sessions, and you can message any of them.
+A message from the phone reaches an agent that can run tools on your
+computer, so treat a paired phone like a key to it: if you lose one,
+revoke it straight away (see [If you lose a phone](#if-you-lose-a-phone)).
 
 ## 5. More computers, yours or anyone's
 

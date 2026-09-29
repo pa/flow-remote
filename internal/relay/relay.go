@@ -54,7 +54,6 @@ type Relay struct {
 	Guard   *envelope.Guard
 	Mailbox Mailbox
 	Flow    flowcli.Flow
-	Allow   *Allowlist
 	State   *State
 	Audit   io.Writer
 	Log     *slog.Logger
@@ -230,9 +229,6 @@ func (r *Relay) deliver(ctx context.Context, dev identity.Device, e envelope.Env
 	if task == nil {
 		return refuse("that session isn't running on the computer")
 	}
-	if !r.Allow.Allows(task.Slug, task.Tags) {
-		return refuse("the computer's allowlist doesn't include this session")
-	}
 	body := fmt.Sprintf("[phone · %s] %s", age(r.now().Sub(time.UnixMilli(e.TS))), m.Body)
 	id, err := r.Flow.Message(ctx, task.Slug, body, m.ReplyTo)
 	if err != nil {
@@ -275,7 +271,7 @@ func (r *Relay) syncSessions(ctx context.Context, force bool) error {
 	for _, t := range tasks {
 		sessions = append(sessions, protocol.Session{
 			Slug: t.Slug, Name: t.Name, Project: t.Project, Tags: t.Tags,
-			WaitingOn: t.WaitingOn, CanSend: r.Allow.Allows(t.Slug, t.Tags),
+			WaitingOn: t.WaitingOn, CanSend: true,
 		})
 	}
 	b, _ := json.Marshal(sessions)

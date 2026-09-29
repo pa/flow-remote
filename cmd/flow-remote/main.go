@@ -500,10 +500,6 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	allow, err := relay.LoadAllowlist(filepath.Join(home(), "allow.txt"))
-	if err != nil {
-		return err
-	}
 	state, err := relay.LoadState(filepath.Join(home(), "forwarded.json"))
 	if err != nil {
 		return err
@@ -515,7 +511,7 @@ func run(ctx context.Context) error {
 	defer audit.Close()
 
 	r := &relay.Relay{
-		Mac: mac, Devices: devs, Guard: guard, Allow: allow, State: state, Audit: audit, Log: log,
+		Mac: mac, Devices: devs, Guard: guard, State: state, Audit: audit, Log: log,
 		Flow: flowcli.CLI{},
 	}
 	if cfg.local() {

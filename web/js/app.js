@@ -265,7 +265,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v31";
+const BUILD = "v32";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -1068,7 +1068,7 @@ function threadScreen(p) {
       h("button", { type: "button", class: "link", onclick: () => go("thread", { replyTo: null }) }, "✕")) : null,
     h("div", { class: "pill" }, input, sendBtn))
     : h("p", { class: "muted pad" }, session
-      ? "Read only. Add this session to ~/.flow-remote/allow.txt on the computer to message it."
+      ? "Read only: this computer's flow-remote is too old to take messages for it."
       : "This session isn't running on the computer.");
 
   return h("main", { class: "threadview" },

@@ -105,8 +105,8 @@ func newRig(t *testing.T) *rig {
 	r.relay = &Relay{
 		Mac: mac, Devices: devs, Guard: envelope.NewMemoryGuard(),
 		Mailbox: &client.Client{BaseURL: r.srv.URL, Mac: mac, Now: clock},
-		Flow:    r.flow, Allow: ParseAllowlist("phone-dispatch\n#personal\n"),
-		State: st, Audit: r.audit, Now: clock,
+		Flow:    r.flow,
+		State:   st, Audit: r.audit, Now: clock,
 	}
 	return r
 }
@@ -211,7 +211,8 @@ func TestDeliverAndStatus(t *testing.T) {
 	for _, s := range sess[0].Sessions {
 		can[s.Slug] = s.CanSend
 	}
-	if !can["phone-dispatch"] || !can["floci-local-apply"] || can["fragile-eol-packages"] {
+	// Any paired phone may message any live session.
+	if !can["phone-dispatch"] || !can["floci-local-apply"] || !can["fragile-eol-packages"] {
 		t.Fatalf("can_send %v", can)
 	}
 }
@@ -219,10 +220,9 @@ func TestDeliverAndStatus(t *testing.T) {
 func TestRefusals(t *testing.T) {
 	r := newRig(t)
 	cases := map[string]protocol.Msg{
-		"not allowlisted": {Kind: protocol.KindSend, ClientID: "a", Task: "fragile-eol-packages", Body: "x"},
-		"not running":     {Kind: protocol.KindSend, ClientID: "b", Task: "some-other-task", Body: "x"},
-		"bad slug":        {Kind: protocol.KindSend, ClientID: "c", Task: "../etc; rm", Body: "x"},
-		"empty":           {Kind: protocol.KindSend, ClientID: "d", Task: "phone-dispatch", Body: ""},
+		"not running": {Kind: protocol.KindSend, ClientID: "b", Task: "some-other-task", Body: "x"},
+		"bad slug":    {Kind: protocol.KindSend, ClientID: "c", Task: "../etc; rm", Body: "x"},
+		"empty":       {Kind: protocol.KindSend, ClientID: "d", Task: "phone-dispatch", Body: ""},
 	}
 	for _, m := range cases {
 		r.phoneSend(m, r.now)
@@ -395,19 +395,6 @@ func TestPollIntervalIsClamped(t *testing.T) {
 		if got := r.tick(); got != want {
 			t.Errorf("poll_ms=%d: waited %v, want %v", ms, got, want)
 		}
-	}
-}
-
-func TestAllowlist(t *testing.T) {
-	a := ParseAllowlist("# a comment\nphone-dispatch\n#personal\n\n")
-	if !a.Allows("phone-dispatch", nil) || !a.Allows("x", []string{"personal"}) || a.Allows("x", []string{"fragile"}) {
-		t.Fatal("allowlist rules")
-	}
-	if a.Allows("a", nil) {
-		t.Fatal("comment parsed as rule")
-	}
-	if !ParseAllowlist("*\n").Allows("anything", nil) {
-		t.Fatal("* should allow every live session")
 	}
 }
 
