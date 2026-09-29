@@ -265,7 +265,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v33";
+const BUILD = "v34";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -280,9 +280,20 @@ function fitViewport() {
     html.style.setProperty("--app-top", `${vv.offsetTop}px`);
   }
   html.classList.toggle("kb-open", typing && env.kind !== "desktop");
+  // Keep the newest message in view as the keyboard moves, but only if
+  // that's where you were: iOS fires these while you scroll, too.
   const list = root.querySelector(".thread");
-  if (list && state.view === "thread") list.scrollTop = list.scrollHeight;
+  if (list && state.view === "thread" && threadPinned) list.scrollTop = list.scrollHeight;
 }
+
+// threadPinned is whether the open thread is scrolled to its newest
+// message. The list's own scroll events keep it current.
+let threadPinned = true;
+const trackPin = (e) => {
+  const l = e.currentTarget;
+  threadPinned = l.scrollHeight - l.scrollTop - l.clientHeight < 48;
+};
+
 if (window.visualViewport) {
   visualViewport.addEventListener("resize", fitViewport);
   visualViewport.addEventListener("scroll", fitViewport);
@@ -366,7 +377,7 @@ function render({ stickToBottom = false } = {}) {
     const nextTa = slot.querySelector("textarea"), liveTa = oldMain.querySelector(".composer-slot textarea");
     if (nextTa && liveTa) liveTa.placeholder = nextTa.placeholder;
     const list = oldMain.querySelector(".thread");
-    const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 48;
+    const atBottom = threadPinned;
     const top = list.scrollTop;
     const nextList = next.querySelector(".thread");
     oldMain.replaceChild(next.querySelector("header"), oldMain.querySelector("header"));
@@ -389,7 +400,7 @@ function render({ stickToBottom = false } = {}) {
   const scrollY = window.scrollY;
   const list = root.querySelector(".thread");
   const listTop = list ? list.scrollTop : 0;
-  const atBottom = !list || list.scrollHeight - list.scrollTop - list.clientHeight < 48;
+  const atBottom = !list || threadPinned;
 
   root.replaceChildren(next);
   if (toast) root.append(toast);
@@ -407,6 +418,7 @@ function render({ stickToBottom = false } = {}) {
   if (state.view === "thread") {
     const nextList = root.querySelector(".thread");
     // Follow new messages only if you were already at the newest one.
+    if (!sameView) threadPinned = true; // a thread opens at its newest message
     if (nextList) nextList.scrollTop = !sameView || stickToBottom || atBottom ? nextList.scrollHeight : listTop;
     const nextTa = root.querySelector("textarea");
     if (draft && nextTa) {
@@ -1041,7 +1053,7 @@ function threadScreen(p) {
 
   return h("main", { class: "threadview" },
     bar(task, { back: goBack, backCount: itemsCache.filter((it) => it.dir === "in" && !it.read && !(it.mac === p.mac_id && it.task === task)).length, sub: h("span", { class: offline ? "status warn" : session ? "status ok" : "status" }, [macLabel(p), offline ? "offline" : session ? "live" : "not running", session?.project].filter(Boolean).join(" · ")) }),
-    h("div", { class: "thread" }, items.length ? items.map(bubble) : h("p", { class: "muted pad" }, "No messages yet.")),
+    h("div", { class: "thread", onscroll: trackPin }, items.length ? items.map(bubble) : h("p", { class: "muted pad" }, "No messages yet.")),
     // render() keeps this slot's element across renders while its markup
     // is unchanged, so the field keeps focus and the keyboard stays up.
     h("div", { class: "composer-slot" }, composer));
