@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -13,11 +15,22 @@ import (
 	"time"
 )
 
-const agentLabel = "com.github.pa.flow-remote.relay"
+// agentLabel names the launchd agent for this home. The default home
+// gets the plain label; any other (FLOW_REMOTE_HOME) gets its own, so
+// starting a test setup can't replace the real relay's agent.
+func agentLabel() string {
+	const base = "com.github.pa.flow-remote.relay"
+	h, _ := os.UserHomeDir()
+	if filepath.Clean(home()) == filepath.Join(h, ".flow-remote") {
+		return base
+	}
+	sum := sha256.Sum256([]byte(filepath.Clean(home())))
+	return base + "." + hex.EncodeToString(sum[:4])
+}
 
 func agentPath() string {
 	h, _ := os.UserHomeDir()
-	return filepath.Join(h, "Library", "LaunchAgents", agentLabel+".plist")
+	return filepath.Join(h, "Library", "LaunchAgents", agentLabel()+".plist")
 }
 
 func domain() string { return fmt.Sprintf("gui/%d", os.Getuid()) }
@@ -32,7 +45,8 @@ var plistTmpl = template.Must(template.New("plist").Parse(`<?xml version="1.0" e
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key><string>{{.Path}}</string>
-    <key>FLOW_REMOTE_HOME</key><string>{{.Home}}</string>
+    <key>FLOW_REMOTE_HOME</key><string>{{.Home}}</string>{{if .Keystore}}
+    <key>FLOW_REMOTE_KEYSTORE</key><string>{{.Keystore}}</string>{{end}}
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
@@ -62,10 +76,12 @@ func agentStart() error {
 	}
 	var buf bytes.Buffer
 	if err := plistTmpl.Execute(&buf, map[string]string{
-		"Label": agentLabel, "Bin": bin, "Home": home(),
+		"Label": agentLabel(), "Bin": bin, "Home": home(),
 		// launchd starts with a bare PATH; keep this shell's so `flow` is found.
 		"Path": os.Getenv("PATH"),
 		"Log":  filepath.Join(home(), "relay.log"),
+		// A test setup's keys, so its agent doesn't use the Keychain's.
+		"Keystore": os.Getenv("FLOW_REMOTE_KEYSTORE"),
 	}); err != nil {
 		return err
 	}
@@ -75,8 +91,8 @@ func agentStart() error {
 	// Replace a loaded agent so a new binary or PATH takes effect. bootout
 	// returns before the old one has finished unloading, and bootstrapping
 	// over it fails with "Input/output error", so wait for it to go.
-	exec.Command("launchctl", "bootout", domain()+"/"+agentLabel).Run()
-	for i := 0; i < 50 && exec.Command("launchctl", "print", domain()+"/"+agentLabel).Run() == nil; i++ {
+	exec.Command("launchctl", "bootout", domain()+"/"+agentLabel()).Run()
+	for i := 0; i < 50 && exec.Command("launchctl", "print", domain()+"/"+agentLabel()).Run() == nil; i++ {
 		time.Sleep(100 * time.Millisecond)
 	}
 	if err := os.WriteFile(agentPath(), buf.Bytes(), 0o644); err != nil {
@@ -98,7 +114,7 @@ func agentStart() error {
 
 // agentStop unloads the agent and removes it, so it doesn't come back at login.
 func agentStop() error {
-	out, err := exec.Command("launchctl", "bootout", domain()+"/"+agentLabel).CombinedOutput()
+	out, err := exec.Command("launchctl", "bootout", domain()+"/"+agentLabel()).CombinedOutput()
 	if err != nil && !strings.Contains(string(out), "No such process") && !strings.Contains(string(out), "Could not find") {
 		return fmt.Errorf("launchctl bootout: %v: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -110,7 +126,7 @@ func agentStop() error {
 }
 
 func agentStatus() error {
-	out, err := exec.Command("launchctl", "print", domain()+"/"+agentLabel).CombinedOutput()
+	out, err := exec.Command("launchctl", "print", domain()+"/"+agentLabel()).CombinedOutput()
 	if err != nil {
 		fmt.Println("relay agent: not installed (`flow-remote start` installs it)")
 	} else {
