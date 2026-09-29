@@ -227,6 +227,43 @@ window.addEventListener("popstate", () => {
 
 // Left-edge swipe back, for installed iOS apps. It follows the finger and
 // commits past a third of the width or on a quick flick, like native iOS.
+// Swipe one of the session's messages to the right to answer it, as in
+// Messages or WhatsApp. It's the same as tapping the message. Touches that
+// start at the very left edge are left to the back gesture.
+(function swipeToReply() {
+  const EDGE = 24, TRIGGER = 56, MAX = 72;
+  let s = null;
+  document.addEventListener("touchstart", (e) => {
+    const bubble = e.target.closest?.(".bubble.tappable");
+    if (!bubble || e.touches.length !== 1 || e.touches[0].clientX <= EDGE) return;
+    s = { bubble, msg: bubble.closest(".msg"), x: e.touches[0].clientX, y: e.touches[0].clientY, dx: 0, horizontal: null };
+  }, { passive: true });
+  document.addEventListener("touchmove", (e) => {
+    if (!s) return;
+    const dx = e.touches[0].clientX - s.x, dy = e.touches[0].clientY - s.y;
+    if (s.horizontal === null && Math.abs(dx) + Math.abs(dy) > 8) s.horizontal = Math.abs(dx) > Math.abs(dy) && dx > 0;
+    if (!s.horizontal) return;
+    s.dx = Math.min(MAX, Math.max(0, dx));
+    s.msg.style.transition = "none";
+    s.msg.style.transform = `translateX(${s.dx}px)`;
+    s.msg.classList.toggle("swipe-ready", s.dx >= TRIGGER);
+  }, { passive: true });
+  const end = () => {
+    if (!s) return;
+    const { bubble, msg, dx, horizontal } = s;
+    s = null;
+    msg.style.transition = "transform 0.18s ease-out";
+    msg.style.transform = "";
+    msg.classList.remove("swipe-ready");
+    if (horizontal && dx >= TRIGGER) {
+      navigator.vibrate?.(10);
+      bubble.click(); // the tap handler sets "Replying to"
+    }
+  };
+  document.addEventListener("touchend", end, { passive: true });
+  document.addEventListener("touchcancel", end, { passive: true });
+})();
+
 (function edgeSwipe() {
   if (!(env.os === "ios" && env.kind === "phone-app")) return;
   let start = null;
@@ -280,7 +317,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v38";
+const BUILD = "v40";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -796,6 +833,15 @@ function macOffline(p) {
 
 // unreachableLine says why a computer can't be reached, as far as the
 // phone can tell from how the request failed.
+// answeredTest says, for one thread's items, whether a message of yours
+// has had its answer: a reply that names it with --reply-to, or, for a
+// session that doesn't say what it's answering, any unlinked reply after it.
+function answeredTest(items) {
+  const linked = new Set(items.filter((it) => it.dir === "in" && it.reply_to).map((it) => it.reply_to));
+  const lastLoose = Math.max(0, ...items.filter((it) => it.dir === "in" && !it.reply_to).map((it) => it.ts));
+  return (it) => Boolean(it.flow_id && linked.has(it.flow_id)) || it.ts < lastLoose;
+}
+
 function unreachableLine(p) {
   const host = new URL(p.mailbox || location.origin).hostname;
   const wait = " Messages wait here and go when it's back.";
@@ -891,14 +937,20 @@ function sessionsScreen(p) {
     const m = it.dir === "out" ? lastOut : lastIn;
     if (!m[it.task] || it.ts > m[it.task].ts) m[it.task] = it;
   }
-  // How many of your delivered messages to slug came after its last reply.
-  const waitingCount = (slug) => {
-    const since = lastIn[slug]?.ts || 0;
-    return mine.filter((it) => it.task === slug && it.dir === "out" && it.state === "delivered" && it.ts > since).length;
+  // How many of your delivered messages to slug haven't had their answer.
+  const tests = new Map();
+  const answeredIn = (slug) => {
+    if (!tests.has(slug)) tests.set(slug, answeredTest(mine.filter((it) => it.task === slug)));
+    return tests.get(slug);
   };
+  const waitingCount = (slug) =>
+    mine.filter((it) => it.task === slug && it.dir === "out" && it.state === "delivered" && !answeredIn(slug)(it)).length;
+  // The session's row shows where your messages are while any is unanswered.
   const awaiting = (slug) => {
     const o = lastOut[slug];
-    if (!o || o.state === "resent" || (lastIn[slug]?.ts || 0) > o.ts || Date.now() - o.ts > WAIT_MS) return null;
+    if (!o || o.state === "resent" || Date.now() - o.ts > WAIT_MS) return null;
+    if (o.state === "delivered" && waitingCount(slug) === 0) return null;
+    if (o.state !== "delivered" && answeredIn(slug)(o)) return null;
     return o;
   };
   const BAD = ["refused", "failed", "stale"];
@@ -1017,19 +1069,45 @@ function threadScreen(p) {
   const RUN_MS = 5 * 60_000;
   const GAP_MS = 60 * 60_000;
   const sameRun = (a, b) => a && b && a.dir === b.dir && Math.abs(b.ts - a.ts) < RUN_MS;
-  // Your delivered messages the session hasn't replied after are still in
-  // its queue, as far as anyone can tell: flow doesn't say when a session
-  // reads its inbox (Facets-cloud/flow#100), but a reply means it did.
-  const lastReply = Math.max(0, ...items.filter((it) => it.dir === "in").map((it) => it.ts));
-  const waiting = items.filter((it) => it.dir === "out" && it.state === "delivered" && it.ts > lastReply);
+  // Your delivered messages without an answer are still in the session's
+  // queue, as far as anyone can tell: flow doesn't say when a session reads
+  // its inbox (Facets-cloud/flow#100), but an answer means it did.
+  const answered = answeredTest(items);
+  const waiting = items.filter((it) => it.dir === "out" && it.state === "delivered" && !answered(it));
+  // A message that answers another shows a quote of it; tap to go there.
+  const byFlow = new Map(items.filter((it) => it.flow_id).map((it) => [it.flow_id, it]));
+  const quote = (it) => {
+    const target = it.reply_to && byFlow.get(it.reply_to);
+    if (!target) return null;
+    return h("button", {
+      class: "quote", type: "button", "aria-label": "Show the message this answers",
+      onclick: () => {
+        const el = root.querySelector(`[data-id="${CSS.escape(target.id)}"]`);
+        if (!el) return;
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.add("flash");
+        setTimeout(() => el.classList.remove("flash"), 1200);
+      },
+    }, "↩ ", target.body.length > 90 ? target.body.slice(0, 90) + "…" : target.body);
+  };
+  // Tap one of the session's messages to answer that one.
+  const replyTo = (it) => () => {
+    state.replyTo = { id: it.flow_id, body: it.body };
+    render();
+    root.querySelector(".composer textarea")?.focus();
+  };
   const bubble = (it, i) => {
     const prev = items[i - 1], next = items[i + 1];
     const last = !sameRun(it, next);
     const run = `${sameRun(prev, it) ? " cont" : ""}${last ? "" : " more"}`;
     const divider = !prev || it.ts - prev.ts >= GAP_MS ? h("div", { class: "divider" }, whenLabel(it.ts)) : null;
     if (it.dir === "in") {
-      return [divider, h("div", { class: `msg in${run}` },
-        h("div", { class: "bubble them" }, it.urgent ? h("span", { class: "chip urgent" }, "urgent") : null, it.body),
+      const tappable = canSend && it.flow_id && !it.broadcast;
+      const chosen = state.replyTo?.id === it.flow_id;
+      return [divider, h("div", { class: `msg in${run}${chosen ? " chosen" : ""}`, "data-id": it.id },
+        quote(it),
+        h("div", { class: `bubble them${tappable ? " tappable" : ""}`, onclick: tappable ? replyTo(it) : null, title: tappable ? "Reply to this" : null },
+          it.urgent ? h("span", { class: "chip urgent" }, "urgent") : null, it.body),
         last || it.broadcast ? h("span", { class: "meta" }, `${clock(it.ts)}${it.broadcast ? " · broadcast" : ""}`) : null)];
     }
     const place = waiting.indexOf(it);
@@ -1039,7 +1117,8 @@ function threadScreen(p) {
     // Each message's own fate matters, so anything but "delivered" shows
     // even mid-run.
     const showMeta = last || it.state !== "delivered" || place >= 0;
-    return [divider, h("div", { class: `msg out${run}${place >= 0 ? " queued" : ""}` },
+    return [divider, h("div", { class: `msg out${run}${place >= 0 ? " queued" : ""}`, "data-id": it.id },
+      quote(it),
       h("div", { class: "bubble me" }, it.body),
       showMeta ? h("span", { class: `meta ${bad ? "bad" : ""}` },
         `${clock(it.ts)} · ${label}${it.reason ? ` · ${it.reason}` : ""}`) : null,
@@ -1281,7 +1360,7 @@ async function handle(p, e) {
       if (await db.getItem(id)) break;
       await db.putItem({
         id, mac: p.mac_id, task: mail.task, dir: "in", body: mail.body, ts: mail.created_at, flow_id: mail.flow_id,
-        urgent: Boolean(mail.urgent), broadcast: Boolean(mail.broadcast),
+        urgent: Boolean(mail.urgent), broadcast: Boolean(mail.broadcast), reply_to: mail.reply_to || null,
         read: here && state.task === mail.task, replied: false,
       });
       // In the open thread, offer to answer what just arrived; anywhere

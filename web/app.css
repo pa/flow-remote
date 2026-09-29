@@ -220,3 +220,20 @@ main { will-change: auto; }
 /* Your messages still in the session's queue. */
 .msg.queued .meta { color: var(--accent); }
 .msg.queued .me { opacity: 0.85; }
+/* A message that answers another starts with a quote of it. */
+.quote { align-self: stretch; max-width: 85%; display: block; text-align: left; font-size: 12.5px; line-height: 1.35;
+  color: var(--muted); padding: 5px 10px; margin-bottom: 3px; border-left: 2px solid var(--line);
+  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.msg.out .quote { align-self: flex-end; border-left: 0; border-right: 2px solid rgba(10, 132, 255, 0.5); text-align: right; }
+.bubble.tappable { cursor: pointer; }
+.bubble.tappable:active { filter: brightness(1.25); }
+.msg.chosen .them { box-shadow: 0 0 0 2px var(--accent); }
+.msg.flash .bubble { animation: flash 1.2s ease-out; }
+@keyframes flash { 0%, 40% { box-shadow: 0 0 0 3px var(--accent); } 100% { box-shadow: 0 0 0 0 transparent; } }
+@media (prefers-reduced-motion: reduce) { .msg.flash .bubble { animation: none; outline: 2px solid var(--accent); } }
+/* Swipe to reply: an arrow shows behind the message as it slides. */
+.msg.in { position: relative; }
+.msg.in .bubble.tappable { touch-action: pan-y; }
+.msg.in::before { content: "↩"; position: absolute; left: -30px; top: 50%; transform: translateY(-50%) scale(0.7);
+  font-size: 17px; color: var(--muted); opacity: 0; transition: opacity 0.12s, transform 0.12s; }
+.msg.in.swipe-ready::before { opacity: 1; color: var(--accent); transform: translateY(-50%) scale(1); }
