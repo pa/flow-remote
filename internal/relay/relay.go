@@ -143,7 +143,7 @@ func (r *Relay) Tick(ctx context.Context) (time.Duration, error) {
 // that fail checks are acked too, so junk doesn't come back every poll.
 func (r *Relay) handle(ctx context.Context, e envelope.Envelope, forceSessions *bool) bool {
 	if e.To != r.Mac.ID {
-		r.audit("drop", e.From, "", "addressed to another Mac")
+		r.audit("drop", e.From, "", "addressed to another computer")
 		return true
 	}
 	dev, ok := r.Devices.Active(e.From)
@@ -208,7 +208,7 @@ func (r *Relay) deliver(ctx context.Context, dev identity.Device, e envelope.Env
 	}
 	if waited := r.now().Sub(time.UnixMilli(e.TS)); waited > staleAfter {
 		r.audit("stale", dev.ID, m.Task, age(waited))
-		return protocol.Msg{State: protocol.Stale, Reason: fmt.Sprintf("it waited %s while the Mac was away", strings.TrimPrefix(age(waited), "sent "))}
+		return protocol.Msg{State: protocol.Stale, Reason: fmt.Sprintf("it waited %s while the computer was away", strings.TrimPrefix(age(waited), "sent "))}
 	}
 	// A reply may only answer mail this relay forwarded from that session,
 	// so a phone can't mark other sessions' mail read or pass arbitrary
@@ -228,10 +228,10 @@ func (r *Relay) deliver(ctx context.Context, dev identity.Device, e envelope.Env
 		}
 	}
 	if task == nil {
-		return refuse("that session isn't running on the Mac")
+		return refuse("that session isn't running on the computer")
 	}
 	if !r.Allow.Allows(task.Slug, task.Tags) {
-		return refuse("the Mac's allowlist doesn't include this session")
+		return refuse("the computer's allowlist doesn't include this session")
 	}
 	body := fmt.Sprintf("[phone · %s] %s", age(r.now().Sub(time.UnixMilli(e.TS))), m.Body)
 	id, err := r.Flow.Message(ctx, task.Slug, body, m.ReplyTo)

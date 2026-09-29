@@ -13,11 +13,11 @@ docker compose up -d
 curl https://$DOMAIN/v1/health   # "ok" once MongoDB is connected
 ```
 
-Then follow "Set up your Mac" in the main README, with
+Then follow "Set up your computer" in the main README, with
 `--mailbox https://$DOMAIN`.
 
-Once your first Mac is registered, clear `MAILBOX_SETUP_TOKEN` in `.env`
-and run `docker compose up -d` again. Other Macs join with
+Once your first computer is registered, clear `MAILBOX_SETUP_TOKEN` in `.env`
+and run `docker compose up -d` again. Other computers join with
 `flow-remote invite`.
 
 MongoDB's data lives in the `mongo-data` volume. It holds sealed envelopes

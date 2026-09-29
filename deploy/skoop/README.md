@@ -17,7 +17,7 @@ link lives in, and the Dockerfile is at the root. The link
 ```bash
 skoop init flow-remote            # or `skoop link flow-remote` for an existing app
 
-# The token that registers your first (admin) Mac. Keep a copy for
+# The token that registers your first (admin) computer. Keep a copy for
 # `flow-remote setup`; skoop stores it write-only.
 TOKEN=$(openssl rand -hex 24); echo "$TOKEN" > ~/.flow-remote-setup-token
 skoop env set --secret MAILBOX_SETUP_TOKEN="$TOKEN"
@@ -44,7 +44,7 @@ skoop app status                  # the *.web.app URL
 curl https://<your-url>/v1/health # "ok" once Firestore is connected
 ```
 
-Then follow "Set up your Mac" in the main README, using that URL.
+Then follow "Set up your computer" in the main README, using that URL.
 
 ## Custom domain
 
@@ -64,16 +64,16 @@ issues within about 10 minutes of the record resolving.
 skoop builds create cloudrun/mailbox --remote && skoop releases create
 ```
 
-## After your first Mac is set up
+## After your first computer is set up
 
-Switch the setup token off, so nobody can register an admin Mac with it:
+Switch the setup token off, so nobody can register an admin computer with it:
 
 ```bash
 skoop env set --secret MAILBOX_SETUP_TOKEN=""   # or remove the env from the cloudrun resource
 skoop releases create
 ```
 
-Other Macs join with `flow-remote invite`.
+Other computers join with `flow-remote invite`.
 
 ## Why these settings
 

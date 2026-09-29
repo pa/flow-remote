@@ -5,8 +5,8 @@ phone, and get their replies back, through a mailbox that can't read or
 forge messages in transit.
 
 ```
- phone (web app)            mailbox (any host)              your Mac
- a key per Mac  ──HTTPS──▶  stores sealed envelopes  ◀──  flow-remote relay
+ phone (web app)            mailbox (any host)              your computer
+ a key per computer ──HTTPS──▶ stores sealed envelopes ◀── flow-remote relay
  seals + signs              checks signatures,              opens, checks,
  every message              knows only public keys          runs `flow message`
 ```
@@ -14,10 +14,10 @@ forge messages in transit.
 - **End to end.** Every message is sealed to its recipient (P-256 ECDH,
   AES-256-GCM) and signed by its sender (P-256 ECDSA). The mailbox sees who
   talks to whom and when, and nothing else.
-- **No accounts.** Macs and phones prove who they are by signing each
+- **No accounts.** computers and phones prove who they are by signing each
   request. The mailbox holds only public keys.
-- **Tenants.** Each Mac is its own tenant. A phone belongs to the Mac that
-  paired it and can only reach that Mac. Your other Macs, and other
+- **Tenants.** Each computer is its own tenant. A phone belongs to the computer that
+  paired it and can only reach that computer. Your other computers, and other
   people's, are separate.
 - **Per-device revocation.** `flow-remote revoke` cuts off one phone. Its
   key signs nothing afterwards.
@@ -26,19 +26,19 @@ forge messages in transit.
 app's code. Whoever runs it (you, if you deploy your own) could ship a
 modified app that uses a paired phone's key while it's open, and so send
 messages as that phone. It still can't read messages already sent, or
-impersonate your Mac. Run your own mailbox, or only join one run by
-someone you trust. On a shared mailbox, invited Macs are isolated from
+impersonate your computer. Run your own mailbox, or only join one run by
+someone you trust. On a shared mailbox, invited computers are isolated from
 each other but not from its operator.
 
 Details: [docs/DESIGN.md](docs/DESIGN.md) covers the architecture,
 decisions and prior art, and [docs/PROTOCOL.md](docs/PROTOCOL.md) the byte
 formats.
 
-## Or: serve from your Mac over Tailscale
+## Or: serve from your computer over Tailscale
 
 You don't need a mailbox at all if your phone runs Tailscale. `flow-remote`
 can join your tailnet as its own device and serve the app and API from the
-Mac, with nothing on the public internet. See
+computer, with nothing on the public internet. See
 [deploy/tailscale](deploy/tailscale). The rest of this page covers a hosted
 mailbox.
 
@@ -53,11 +53,11 @@ The mailbox is one container: the API plus the phone app. Pick a host:
 - **Anything else** that runs a container over HTTPS: see
   [Mailbox configuration](#mailbox-configuration).
 
-Keep the `MAILBOX_SETUP_TOKEN` you set. Your first Mac needs it.
+Keep the `MAILBOX_SETUP_TOKEN` you set. Your first computer needs it.
 
-## 2. Set up your Mac
+## 2. Set up your computer
 
-You need [flow](https://github.com/Facets-cloud/flow) on the Mac. Install
+You need [flow](https://github.com/Facets-cloud/flow) on the computer. Install
 `flow-remote` from a release, or build it.
 
 **From a release** (Apple Silicon shown; use `darwin_amd64` on an Intel Mac):
@@ -87,11 +87,11 @@ git clone https://github.com/pa/flow-remote && cd flow-remote
 go install ./cmd/flow-remote        # installs to $(go env GOPATH)/bin
 ```
 
-Then set up the Mac. The first Mac on a mailbox uses its setup token and
+Then set up the computer. The first computer on a mailbox uses its setup token and
 becomes the admin:
 
 ```bash
-FLOW_REMOTE_SETUP_TOKEN=<token> flow-remote setup --mailbox https://flow.example.com --name "Work Mac"
+FLOW_REMOTE_SETUP_TOKEN=<token> flow-remote setup --mailbox https://flow.example.com --name "Work laptop"
 ```
 
 Keys go in the login Keychain (service `flow-remote`). Settings and logs
@@ -115,12 +115,12 @@ debugging. Only one relay runs at a time.
 1. Open the mailbox URL on your phone. On an iPhone, tap Share, then
    **Add to Home Screen**, and open it from there, because that's where its
    keys will live.
-2. On the Mac, run `flow-remote pair`. It shows a QR code for 2 minutes
+2. On the computer, run `flow-remote pair`. It shows a QR code for 2 minutes
    (`--png FILE` saves it as an image as well).
 3. In the app, tap **Scan the QR code**, or **Take a photo of the QR code**
    if the live camera won't start. Then tap **Pair**.
 4. Check that the fingerprints on the two screens match, and type `y` on
-   the Mac.
+   the computer.
 
 The phone now lists your live sessions. Sessions in
 `~/.flow-remote/allow.txt` accept messages; the rest are read-only:
@@ -134,34 +134,34 @@ phone-dispatch     # a task slug
 The relay reads this file when it starts, so run `flow-remote start` again
 after changing it.
 
-## 5. More Macs, yours or anyone's
+## 5. More computers, yours or anyone's
 
-On an admin Mac:
+On an admin computer:
 
 ```bash
 flow-remote invite        # a single-use code, valid for 24 hours
 ```
 
-On the new Mac, after installing:
+On the new computer, after installing:
 
 ```bash
-FLOW_REMOTE_INVITE=<code> flow-remote setup --mailbox https://flow.example.com --name "Home Mac"
+FLOW_REMOTE_INVITE=<code> flow-remote setup --mailbox https://flow.example.com --name "Home desktop"
 flow-remote start && flow-remote pair
 ```
 
-Pair from the same phone with **Settings → Pair another Mac**. The app
-keeps a separate key per Mac and shows a switcher.
+Pair from the same phone with **Settings → Pair another computer**. The app
+keeps a separate key per computer and shows a switcher.
 
-Admin commands: `flow-remote tenants` lists Macs, and
+Admin commands: `flow-remote tenants` lists computers, and
 `flow-remote remove-tenant <mac-id>` removes one, together with its phones
 and its mail.
 
-Once your first Mac is set up, clear `MAILBOX_SETUP_TOKEN` on the mailbox.
+Once your first computer is set up, clear `MAILBOX_SETUP_TOKEN` on the mailbox.
 Invites cover everything after that.
 
 ## If you lose a phone
 
-On the Mac it's paired with, list its phones and revoke the lost one:
+On the computer it's paired with, list its phones and revoke the lost one:
 
 ```bash
 flow-remote devices
@@ -177,13 +177,13 @@ again**, which gives it a new key.
 
 | Command | What it does |
 | --- | --- |
-| `setup --mailbox URL [--name N]` | save the mailbox and register this Mac (`FLOW_REMOTE_SETUP_TOKEN` or `FLOW_REMOTE_INVITE`) |
+| `setup --mailbox URL [--name N]` | save the mailbox and register this computer (`FLOW_REMOTE_SETUP_TOKEN` or `FLOW_REMOTE_INVITE`) |
 | `start` / `stop` / `status` | run the relay as a launchd agent, stop it, check it |
 | `run` | run the relay in the foreground |
 | `pair [--png FILE]` | show a QR code and enroll a phone |
-| `devices [--all]` / `revoke <device-id>` | list this Mac's active phones with when each last checked in (`--all` adds revoked ones), or cut one off |
-| `invite` | (admin) a single-use code for another Mac |
-| `tenants` / `remove-tenant <mac-id>` | (admin) list or remove Macs |
+| `devices [--all]` / `revoke <device-id>` | list this computer's active phones with when each last checked in (`--all` adds revoked ones), or cut one off |
+| `invite` | (admin) a single-use code for another computer |
+| `tenants` / `remove-tenant <mac-id>` | (admin) list or remove computers |
 | `version` | print the version |
 
 ## Mailbox configuration
@@ -194,7 +194,7 @@ again**, which gives it a new key.
 | `MAILBOX_STORE` | `mongo` in production; `memory` for local runs (refused on Cloud Run) |
 | `MAILBOX_MONGO_URI` | a MongoDB connection string (Firestore's MongoDB mode works) |
 | `MAILBOX_MONGO_DB` | the database name; defaults to the one in the URI's path |
-| `MAILBOX_SETUP_TOKEN` | registers the first, admin Mac; clear it afterwards |
+| `MAILBOX_SETUP_TOKEN` | registers the first, admin computer; clear it afterwards |
 | `MAILBOX_DEVICE_IDLE_DAYS` | phone keys unused this long stop working (default 30; `0` never) |
 | `MAILBOX_TRUSTED_PROXIES` | CIDRs of front ends whose `X-Forwarded-For` entry names the client, for per-IP limits (default `66.249.64.0/19`, Firebase Hosting's edge) |
 | `MAILBOX_DEBUG_ERRORS` | `1` returns store errors to callers, for diagnosis; otherwise they get a logged reference |
@@ -228,7 +228,7 @@ FLOW_REMOTE_MONGO_URI=mongodb://127.0.0.1:27017 go test ./internal/mailbox/   # 
 MAILBOX_SETUP_TOKEN=dev-token-dev-token-dev-token MAILBOX_WEB_DIR=web go run ./cmd/mailbox
 ```
 
-For a test Mac that doesn't touch your Keychain, set
+For a test computer that doesn't touch your Keychain, set
 `FLOW_REMOTE_KEYSTORE=dir FLOW_REMOTE_HOME=/tmp/fr`.
 
 ## License

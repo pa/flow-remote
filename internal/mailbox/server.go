@@ -254,7 +254,7 @@ func (s *Server) mac(h handler) http.HandlerFunc {
 			return
 		}
 		if err != nil {
-			s.fail(w, http.StatusUnauthorized, "unsigned, or signed by an unknown Mac")
+			s.fail(w, http.StatusUnauthorized, "unsigned, or signed by an unknown computer")
 			return
 		}
 		if !s.sigs.firstUse(r.Header.Get(reqsig.HeaderSig), s.now(), reqsig.Window) {
@@ -281,7 +281,7 @@ func (s *Server) expired(ctx context.Context, deviceID string) bool {
 func (s *Server) admin(h handler) http.HandlerFunc {
 	return s.mac(func(w http.ResponseWriter, r *http.Request, c caller) {
 		if !c.Admin {
-			s.fail(w, http.StatusForbidden, "only an admin Mac can do that")
+			s.fail(w, http.StatusForbidden, "only an admin computer can do that")
 			return
 		}
 		h(w, r, c)
@@ -354,7 +354,7 @@ func (s *Server) registerMac(w http.ResponseWriter, r *http.Request) {
 		}
 		admin = true
 	case invite == "":
-		s.fail(w, http.StatusForbidden, "registering needs an invite from an admin Mac (`flow-remote invite`)")
+		s.fail(w, http.StatusForbidden, "registering needs an invite from an admin computer (`flow-remote invite`)")
 		return
 	}
 	if invite != "" && setup == "" {
@@ -407,7 +407,7 @@ func (s *Server) phonePost(w http.ResponseWriter, r *http.Request, c caller) {
 		return
 	}
 	if e.From != c.ID || e.To != c.Mac {
-		s.fail(w, http.StatusBadRequest, "a phone sends as itself, to the Mac that enrolled it")
+		s.fail(w, http.StatusBadRequest, "a phone sends as itself, to the computer that enrolled it")
 		return
 	}
 	if !s.limits.allow(c.ID, phonePerHour, s.now()) {
@@ -416,7 +416,7 @@ func (s *Server) phonePost(w http.ResponseWriter, r *http.Request, c caller) {
 	}
 	// Per tenant too, so extra phones don't multiply the limit.
 	if !s.limits.allow("tenant:"+c.Mac, tenantPerHour, s.now()) {
-		s.fail(w, http.StatusTooManyRequests, "this Mac's phones hit their hourly limit")
+		s.fail(w, http.StatusTooManyRequests, "this computer's phones hit their hourly limit")
 		return
 	}
 	if !s.roomFor(w, r.Context(), c.Mac) {
@@ -501,7 +501,7 @@ func (s *Server) putDevice(w http.ResponseWriter, r *http.Request, c caller) {
 	if d, err := s.Store.GetDevice(r.Context(), req.DeviceID); err != nil || d.Owner != c.Mac {
 		// A new device for this Mac: check the cap.
 		if ids, err := s.Store.ListDevices(r.Context(), c.Mac); err == nil && len(ids) >= devicesPerMac {
-			s.fail(w, http.StatusConflict, "this Mac already has the most phones allowed; revoke one first")
+			s.fail(w, http.StatusConflict, "this computer already has the most phones allowed; revoke one first")
 			return
 		}
 	}
@@ -564,7 +564,7 @@ func (s *Server) relayPost(w http.ResponseWriter, r *http.Request, c caller) {
 	}
 	// Only to its own phones: a Mac can't drop mail into another tenant's.
 	if d, err := s.Store.GetDevice(r.Context(), e.To); err != nil || d.Owner != c.Mac || s.expired(r.Context(), e.To) {
-		s.fail(w, http.StatusNotFound, "no such device on this Mac, or its key expired")
+		s.fail(w, http.StatusNotFound, "no such device on this computer, or its key expired")
 		return
 	}
 	if !s.limits.allow(c.Mac, relayPerHour, s.now()) {
@@ -619,7 +619,7 @@ func (s *Server) listTenants(w http.ResponseWriter, r *http.Request, _ caller) {
 func (s *Server) removeTenant(w http.ResponseWriter, r *http.Request, c caller) {
 	id := r.PathValue("id")
 	if id == c.Mac {
-		s.fail(w, http.StatusBadRequest, "a Mac can't remove itself")
+		s.fail(w, http.StatusBadRequest, "a computer can't remove itself")
 		return
 	}
 	devs, _ := s.Store.ListDevices(r.Context(), id)

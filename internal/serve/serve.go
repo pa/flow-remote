@@ -80,7 +80,7 @@ func Run(ctx context.Context, o Options) error {
 	// token, no invites.
 	err = db.RegisterMac(ctx, mailbox.Mac{ID: o.Mac.ID, SignPub: o.Mac.SignPub(), Admin: true, Created: time.Now()})
 	if errors.Is(err, mailbox.ErrConflict) {
-		return errors.New("mailbox.db belongs to a different identity for this Mac; move it aside to start fresh")
+		return errors.New("mailbox.db belongs to a different identity for this computer; move it aside to start fresh")
 	}
 	if err != nil && !errors.Is(err, mailbox.ErrExists) {
 		return err

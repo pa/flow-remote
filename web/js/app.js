@@ -253,7 +253,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v24";
+const BUILD = "v25";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -468,7 +468,7 @@ function installScreen(forPairing = false) {
       h("li", {}, "Choose ", h("b", {}, "Add to Home Screen"), ", then ", h("b", {}, "Add"), "."),
       forPairing
         ? h("li", {}, "Open ", h("b", {}, "flow-remote"), " from your home screen, tap ", h("b", {}, "Scan the QR code"),
-          ", and scan the code on your Mac again. If it has expired, run ", h("code", {}, "flow-remote pair"), " for a new one.")
+          ", and scan the code on your computer again. If it has expired, run ", h("code", {}, "flow-remote pair"), " for a new one.")
         : h("li", {}, "Open ", h("b", {}, "flow-remote"), " from your home screen, and pair from there."),
     ]
     : [
@@ -497,7 +497,7 @@ function guideScreen(adding) {
   const note = h("p", { class: "muted" });
   const desktop = env.kind === "desktop";
   return h("main", {},
-    bar(adding ? "Pair another Mac" : "Get started", adding ? { back: goBack } : {}),
+    bar(adding ? "Pair another computer" : "Get started", adding ? { back: goBack } : {}),
     adding ? null : h("div", { class: "pad center-text" },
       h("img", { class: "logo", src: "icon.svg", alt: "" }),
       h("h1", { class: "brand" }, "flow-remote"),
@@ -508,15 +508,15 @@ function guideScreen(adding) {
       h("div", { class: "qrwrap" }, qrSvg(origin)),
       h("p", { class: "muted center-text" }, origin)) : null,
     h("section", { class: "card guide" },
-      h("h2", {}, "On your Mac"),
+      h("h2", {}, "On your computer"),
       h("ol", {},
         h("li", {}, h("p", {}, "Install flow-remote from the repo (needs Go and flow):"),
           cmd("git clone https://github.com/pa/flow-remote && cd flow-remote && go install ./cmd/flow-remote")),
         h("li", {},
-          h("p", {}, "Set up this Mac. The first Mac on a mailbox uses the mailbox's setup token:"),
+          h("p", {}, "Set up this computer. The first computer on a mailbox uses the mailbox's setup token:"),
           cmd(`FLOW_REMOTE_SETUP_TOKEN=<token> flow-remote setup --mailbox ${origin}`),
-          h("p", { class: "muted" }, "Any other Mac, yours or someone else's, uses an invite. On an admin Mac run ",
-            h("code", {}, "flow-remote invite"), ", then on the new Mac:"),
+          h("p", { class: "muted" }, "Any other computer, yours or someone else's, uses an invite. On an admin computer run ",
+            h("code", {}, "flow-remote invite"), ", then on the new computer:"),
           cmd(`FLOW_REMOTE_INVITE=<code> flow-remote setup --mailbox ${origin}`)),
         h("li", {}, h("p", {}, "Start the relay. It runs in the background, starts at login, and restarts if it crashes:"),
           cmd("flow-remote start"),
@@ -531,7 +531,7 @@ function guideScreen(adding) {
       !desktop || env.camera ? h("button", { class: desktop ? "secondary" : "primary", onclick: () => go("scan") }, desktop ? "Scan with this computer's camera" : "Scan the QR code") : null,
       note,
       pasteBox(),
-      h("p", { class: "muted" }, "Then compare the fingerprints on both screens, and type ", h("code", {}, "y"), " on the Mac."),
+      h("p", { class: "muted" }, "Then compare the fingerprints on both screens, and type ", h("code", {}, "y"), " on the computer."),
       state.error ? h("p", { class: "error" }, state.error) : null));
 }
 
@@ -552,7 +552,7 @@ function takeOffer(link) {
     if (!offer) throw new Error("That isn't a pairing link.");
     const existing = state.pairings.find((p) => p.mac_id === offer.mac_id);
     if (existing && !existing.rejected) {
-      throw new Error("This phone is already paired with that Mac. Unpair it in Settings first to pair again.");
+      throw new Error("This phone is already paired with that computer. Unpair it in Settings first to pair again.");
     }
     go(state.view === "scan" ? "welcome" : state.view, { offer });
   } catch (e) {
@@ -682,9 +682,9 @@ function pairScreen() {
     }
   });
   return h("main", {},
-    bar("Pair with this Mac", { back: () => go("welcome", { offer: null }) }),
+    bar("Pair with this computer", { back: () => go("welcome", { offer: null }) }),
     h("section", { class: "card" },
-      h("p", {}, "Check that your Mac shows this fingerprint:"), macFp,
+      h("p", {}, "Check that your computer shows this fingerprint:"), macFp,
       h("label", {}, "Name for this phone", name),
       btn,
       state.error ? h("p", { class: "error" }, state.error) : null));
@@ -722,10 +722,10 @@ async function pair(offer, name) {
 
 function waitingScreen(p) {
   return h("main", { class: "center" },
-    h("h1", { class: "brand" }, "Confirm on your Mac"),
-    h("p", {}, "The Mac asks you to confirm this phone. Check that it shows this fingerprint, then type y:"),
+    h("h1", { class: "brand" }, "Confirm on your computer"),
+    h("p", {}, "The computer asks you to confirm this phone. Check that it shows this fingerprint, then type y:"),
     h("code", { class: "fp" }, p.device_fp),
-    h("p", { class: "muted" }, "Waiting for the Mac…"),
+    h("p", { class: "muted" }, "Waiting for the computer…"),
     h("button", { class: "link", onclick: () => unpair(p) }, "Cancel pairing"));
 }
 
@@ -740,16 +740,16 @@ function macOffline(p) {
 
 function macLine(p) {
   if (p.rejected) {
-    return h("span", { class: "status warn" }, "This Mac revoked this phone. ",
+    return h("span", { class: "status warn" }, "This computer revoked this phone. ",
       h("button", { class: "inline", onclick: () => go("welcome") }, "Pair again"),
       " to reconnect with a new key; your messages stay.");
   }
   if (state.unreachable[p.mac_id]) {
-    return h("span", { class: "status warn" }, "Can't reach this Mac. It may be asleep, or this phone is offline. Messages wait here and go when it's back.");
+    return h("span", { class: "status warn" }, "Can't reach this computer. It may be asleep, or this phone is offline. Messages wait here and go when it's back.");
   }
   const s = state.macSeen[p.mac_id];
-  if (s === undefined) return h("span", { class: "status" }, "Checking the Mac…");
-  if (s === null) return h("span", { class: "status warn" }, "The Mac hasn't checked in yet. Is `flow-remote start` running?");
+  if (s === undefined) return h("span", { class: "status" }, "Checking the computer…");
+  if (s === null) return h("span", { class: "status warn" }, "The computer hasn't checked in yet. Is `flow-remote start` running?");
   const t = s.getTime();
   if (Date.now() - t < ONLINE_MS) return h("span", { class: "status ok" }, `online · seen ${ago(t)}`);
   return h("span", { class: "status warn" }, `last seen ${ago(t)}. Messages wait until it's back.`);
@@ -798,7 +798,7 @@ function sessionsScreen(p) {
   const whereOf = (s) => [s.project, (s.tags || []).map((t) => "#" + t).join(" ")].filter(Boolean).join(" · ");
   const offline = macOffline(p);
   const liveRow = (s, marks) => row(s.slug, s.waiting_on ? `waiting on ${s.waiting_on}` : s.name,
-    offline ? "Mac offline" : s.can_send ? "live" : "read only",
+    offline ? "offline" : s.can_send ? "live" : "read only",
     offline ? "off" : s.can_send ? "live" : "ro", marks, whereOf(s));
 
   const searchBox = h("input", {
@@ -898,7 +898,7 @@ function threadScreen(p) {
         h("div", { class: "bubble them" }, it.urgent ? h("span", { class: "chip urgent" }, "urgent") : null, it.body),
         h("span", { class: "meta" }, `${clock(it.ts)}${it.broadcast ? " · broadcast" : ""}`));
     }
-    const label = { sending: "sending…", queued: "waiting for the Mac to be reachable", sent: "sent, waiting for the Mac", delivered: "in the session's inbox", refused: "refused", failed: "failed", stale: "not delivered", resent: "sent again below" }[it.state] || it.state;
+    const label = { sending: "sending…", queued: "waiting for the computer to be reachable", sent: "sent, waiting for the computer", delivered: "in the session's inbox", refused: "refused", failed: "failed", stale: "not delivered", resent: "sent again below" }[it.state] || it.state;
     const bad = it.state === "refused" || it.state === "failed" || it.state === "stale";
     return h("div", { class: "msg out" },
       h("div", { class: "bubble me" }, it.body),
@@ -919,7 +919,7 @@ function threadScreen(p) {
   // round up-arrow appears only once there's something to send, and the
   // field grows with the text up to a few lines.
   const offline = macOffline(p);
-  const input = h("textarea", { rows: "1", placeholder: canSend ? (offline ? "The Mac is offline; this waits until it's back" : "Message") : "", maxlength: "4000", "aria-label": "Message", enterkeyhint: "enter" });
+  const input = h("textarea", { rows: "1", placeholder: canSend ? (offline ? "The computer is offline; this waits until it's back" : "Message") : "", maxlength: "4000", "aria-label": "Message", enterkeyhint: "enter" });
   const sendBtn = h("button", { class: "send", type: "submit", "aria-label": "Send", hidden: true },
     svgIcon("M12 19V5M5 12l7-7 7 7"));
   const grow = () => {
@@ -954,11 +954,11 @@ function threadScreen(p) {
       h("button", { type: "button", class: "link", onclick: () => go("thread", { replyTo: null }) }, "✕")) : null,
     h("div", { class: "pill" }, input, sendBtn))
     : h("p", { class: "muted pad" }, session
-      ? "Read only. Add this session to ~/.flow-remote/allow.txt on the Mac to message it."
-      : "This session isn't running on the Mac.");
+      ? "Read only. Add this session to ~/.flow-remote/allow.txt on the computer to message it."
+      : "This session isn't running on the computer.");
 
   return h("main", { class: "threadview" },
-    bar(task, { back: goBack, backCount: itemsCache.filter((it) => it.dir === "in" && !it.read && !(it.mac === p.mac_id && it.task === task)).length, sub: h("span", { class: offline ? "status warn" : session ? "status ok" : "status" }, [macLabel(p), offline ? "Mac offline" : session ? "live" : "not running", session?.project].filter(Boolean).join(" · ")) }),
+    bar(task, { back: goBack, backCount: itemsCache.filter((it) => it.dir === "in" && !it.read && !(it.mac === p.mac_id && it.task === task)).length, sub: h("span", { class: offline ? "status warn" : session ? "status ok" : "status" }, [macLabel(p), offline ? "offline" : session ? "live" : "not running", session?.project].filter(Boolean).join(" · ")) }),
     h("div", { class: "thread" }, items.length ? items.map(bubble) : h("p", { class: "muted pad" }, "No messages yet.")),
     composer);
 }
@@ -985,14 +985,14 @@ function settingsScreen() {
     }, debugOn ? "Hide layout numbers" : "Show layout numbers")),
     state.pairings.map((p) => h("section", { class: "card" },
       h("h2", {}, macLabel(p), p.mac_id === state.active ? h("span", { class: "chip live" }, "showing") : null),
-      h("p", {}, "Mac id: ", h("code", {}, p.mac_id)),
-      h("p", {}, "This phone, for this Mac: ", h("code", {}, p.device_id)),
+      h("p", {}, "Computer id: ", h("code", {}, p.mac_id)),
+      h("p", {}, "This phone, for this computer: ", h("code", {}, p.device_id)),
       h("p", {}, "Fingerprint: ", h("code", { class: "fp" }, p.device_fp)),
-      h("button", { class: "danger", onclick: () => unpair(p) }, "Unpair from this Mac"),
-      h("p", { class: "muted" }, "Unpairing deletes this phone's key for that Mac and keeps its messages. Also run ",
+      h("button", { class: "danger", onclick: () => unpair(p) }, "Unpair from this computer"),
+      h("p", { class: "muted" }, "Unpairing deletes this phone's key for that computer and keeps its messages. Also run ",
         h("code", {}, `flow-remote revoke ${p.device_id}`), " on it."))),
     h("div", { class: "pad stack" },
-      h("button", { class: "primary", onclick: () => go("welcome") }, "Pair another Mac"),
+      h("button", { class: "primary", onclick: () => go("welcome") }, "Pair another computer"),
       h("button", { class: "link", onclick: forgetEverything }, "Delete everything on this phone")));
 }
 
@@ -1068,7 +1068,7 @@ async function flushQueued(p) {
   for (const it of itemsCache.filter((x) => x.mac === p.mac_id && x.state === "queued")) {
     if (Date.now() - it.ts > QUEUE_MS) {
       it.state = "stale";
-      it.reason = "it waited too long for the Mac";
+      it.reason = "it waited too long for the computer";
       await db.putItem(it);
       continue;
     }
@@ -1218,7 +1218,7 @@ window.addEventListener("hashchange", () => {
   if (location.hash) history.replaceState(null, "", location.pathname);
   if (!offer) return;
   if (state.pairings.some((p) => p.mac_id === offer.mac_id && !p.rejected)) {
-    go(state.view, { error: "This phone is already paired with that Mac." });
+    go(state.view, { error: "This phone is already paired with that computer." });
     return;
   }
   go("welcome", { offer });

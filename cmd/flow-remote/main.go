@@ -157,14 +157,14 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: flow-remote <command>
   setup --tunnel tailscale [--name N]
-                                    serve this Mac's phones over your tailnet (asks for an auth key)
-  setup --mailbox URL [--name N]    set up this Mac with a hosted mailbox (FLOW_REMOTE_SETUP_TOKEN or FLOW_REMOTE_INVITE)
+                                    serve this computer's phones over your tailnet (asks for an auth key)
+  setup --mailbox URL [--name N]    set up this computer with a hosted mailbox (FLOW_REMOTE_SETUP_TOKEN or FLOW_REMOTE_INVITE)
   pair [--png FILE]                 show a QR code and enroll a phone
   start | stop | status             run the relay in the background (launchd)
   run                               run the relay in the foreground
-  devices [--all] | revoke <id>     list this Mac's phones (--all: with revoked), or revoke one
-  invite                            (admin) a single-use code for another Mac
-  tenants | remove-tenant <mac-id>  (admin) list or remove Macs
+  devices [--all] | revoke <id>     list this computer's phones (--all: with revoked), or revoke one
+  invite                            (admin) a single-use code for another computer
+  tenants | remove-tenant <mac-id>  (admin) list or remove computers
   version                           print the version`)
 	os.Exit(2)
 }
@@ -203,7 +203,7 @@ func setup(args []string) error {
 	public := fs.String("public-url", "", "tunnel none: the https URL phones use to reach --listen")
 	mb := fs.String("mailbox", "", "hosted mailbox base URL")
 	app := fs.String("app", "", "phone app URL (default: this machine's, or the mailbox's)")
-	name := fs.String("name", "", "what phones call this Mac (default: its hostname)")
+	name := fs.String("name", "", "what phones call this computer (default: its hostname)")
 	fs.Parse(args)
 	if *tun != "" {
 		return setupLocal(*tun, *listen, *public, *app, *name)
@@ -221,14 +221,14 @@ func setup(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("saved. This Mac is %s, fingerprint %s\n", mac.ID, mac.Fingerprint())
+	fmt.Printf("saved. This computer is %s, fingerprint %s\n", mac.ID, mac.Fingerprint())
 	// Secrets come from the environment so they stay out of shell history
 	// and the process list.
 	tok, inv := os.Getenv("FLOW_REMOTE_SETUP_TOKEN"), os.Getenv("FLOW_REMOTE_INVITE")
 	c := &client.Client{BaseURL: strings.TrimRight(*mb, "/"), Mac: mac}
 	if err := c.Register(context.Background(), tok, inv); err != nil {
 		if tok == "" && inv == "" {
-			fmt.Println("not registered yet. Ask an admin Mac for `flow-remote invite`, then run setup again with FLOW_REMOTE_INVITE=<code>.")
+			fmt.Println("not registered yet. Ask an admin computer for `flow-remote invite`, then run setup again with FLOW_REMOTE_INVITE=<code>.")
 			return nil
 		}
 		return fmt.Errorf("registering with the mailbox: %w", err)
@@ -261,7 +261,7 @@ func setupLocal(tun, listen, public, app, name string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("saved. This Mac is %s, fingerprint %s\n", mac.ID, mac.Fingerprint())
+	fmt.Printf("saved. This computer is %s, fingerprint %s\n", mac.ID, mac.Fingerprint())
 	fmt.Printf("flow-remote will listen on %s. Route %s to it, with TLS ending on this machine\n", listen, c.PublicURL)
 	fmt.Println("or a proxy you run: whoever ends TLS can change the app's code.")
 	fmt.Println("Next: `flow-remote start`, then `flow-remote pair`.")
@@ -326,7 +326,7 @@ func setupTailscale(app, name string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("saved. This Mac is %s, fingerprint %s\n", mac.ID, mac.Fingerprint())
+	fmt.Printf("saved. This computer is %s, fingerprint %s\n", mac.ID, mac.Fingerprint())
 	fmt.Printf("Phones on your tailnet will reach it at %s\n", url)
 	fmt.Println("Next: `flow-remote start`, then `flow-remote pair`.")
 	return nil
@@ -395,7 +395,7 @@ func pair(ctx context.Context, args []string) error {
 	fmt.Printf("\nScan with your phone's camera, or open:\n%s\n\n", link)
 	fmt.Println("On an iPhone: the first time, this opens Safari. Add flow-remote to your Home Screen,")
 	fmt.Println("open it from there, tap \"Scan the QR code\", and scan this code again.")
-	fmt.Printf("This Mac's fingerprint: %s\n", mac.Fingerprint())
+	fmt.Printf("This computer's fingerprint: %s\n", mac.Fingerprint())
 	fmt.Printf("The code expires in %s. Waiting for the phone...\n", pairing.TTL)
 
 	var dev identity.Device
@@ -668,7 +668,7 @@ func revoke(args []string) error {
 	if _, known := devs.Active(args[0]); !known && !slices.ContainsFunc(devs.List(), func(d identity.Device) bool { return d.ID == args[0] }) {
 		// Not in this Mac's list, e.g. lost from a damaged registry. The
 		// mailbox may still accept it, so revoke it there anyway.
-		fmt.Printf("%s isn't in this Mac's device list; revoking it on the mailbox only.\n", args[0])
+		fmt.Printf("%s isn't in this computer's device list; revoking it on the mailbox only.\n", args[0])
 	} else {
 		if err := devs.Revoke(args[0], time.Now()); err != nil {
 			return err
@@ -711,7 +711,7 @@ func adminClient() (*client.Client, error) {
 // its mailbox has one tenant, this Mac.
 func hostedOnly() error {
 	if cfg, err := loadConfig(); err == nil && cfg.local() {
-		return errors.New("this Mac serves its own phones, so there are no other tenants to manage")
+		return errors.New("this computer serves its own phones, so there are no other tenants to manage")
 	}
 	return nil
 }
@@ -732,12 +732,12 @@ func invite(ctx context.Context) error {
 
   %s
 
-On the other Mac, after installing flow-remote:
+On the other computer, after installing flow-remote:
 
   FLOW_REMOTE_INVITE=%s flow-remote setup --mailbox %s
 
-The invite adds that Mac as its own tenant. It can't see or reach this
-Mac's sessions or phones, and this Mac can't reach its. Both of you still
+The invite adds that computer as its own tenant. It can't see or reach this
+computer's sessions or phones, and this computer can't reach its. Both of you still
 trust whoever runs this mailbox: it serves the phone app's code.
 `, exp.Local().Format(time.RFC1123), code, code, c.BaseURL)
 	return nil
@@ -765,7 +765,7 @@ func tenants(ctx context.Context) error {
 		}
 		me := ""
 		if t.ID == c.Mac.ID {
-			me = "  (this Mac)"
+			me = "  (this computer)"
 		}
 		fmt.Printf("%s  %-6s  joined %s  last seen %s%s\n", t.ID, role, t.Created.Local().Format(time.DateOnly), seen, me)
 	}

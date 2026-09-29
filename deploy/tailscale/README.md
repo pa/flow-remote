@@ -1,12 +1,12 @@
-# Serve from your Mac over Tailscale
+# Serve from your computer over Tailscale
 
-With this setup there's no server to deploy. `flow-remote` runs on your Mac,
+With this setup there's no server to deploy. `flow-remote` runs on your computer,
 joins your tailnet as its own device, and serves the phone app and its API
 at `https://flow-remote-<name>.<tailnet>.ts.net`. Your phone reaches it
 through the Tailscale app.
 
 ```
- phone (web app) ──Tailscale──▶ flow-remote on your Mac ──▶ flow sessions
+ phone (web app) ──Tailscale──▶ flow-remote on your computer ──▶ flow sessions
  Tailscale app on               its own tailnet device,
                                 one HTTPS port
 ```
@@ -16,19 +16,19 @@ through the Tailscale app.
 `flow-remote` embeds Tailscale's Go library, tsnet. tsnet runs its own
 network stack inside the `flow-remote` process:
 
-- The Mac gets no VPN interface and no routes. The Tailscale app isn't
-  needed on the Mac, and nothing else on the Mac (SSH, file sharing, dev
+- The computer gets no VPN interface and no routes. The Tailscale app isn't
+  needed on the computer, and nothing else on the computer (SSH, file sharing, dev
   servers) becomes reachable.
 - The device answers on port 443 only. Every API request there must be
-  signed by a phone you paired and confirmed on the Mac. Anything else gets
+  signed by a phone you paired and confirmed on the computer. Anything else gets
   a 401 before it reaches `flow`.
-- TLS ends inside `flow-remote`, so only your Mac can serve or change the
+- TLS ends inside `flow-remote`, so only your computer can serve or change the
   app's code.
 - It runs as your user, not root. Tailscale SSH, exit node and subnet
   routes stay off.
 
-The Mac has to be awake for messages to go through. While it's asleep the
-app still opens from the phone's cache. It shows the Mac as unreachable and
+The computer has to be awake for messages to go through. While it's asleep the
+app still opens from the phone's cache. It shows the computer as unreachable and
 keeps what you type for up to 10 minutes.
 
 ## 1. Prepare the tailnet (once)
@@ -63,10 +63,10 @@ In the [Tailscale admin console](https://login.tailscale.com/admin):
    The key is used once. Tagged devices don't expire after 180 days the
    way devices logged in by a person do.
 
-## 2. Set up the Mac
+## 2. Set up the computer
 
 ```bash
-flow-remote setup --tunnel tailscale --name "My Mac"
+flow-remote setup --tunnel tailscale --name "My laptop"
 ```
 
 Paste the auth key when asked. Input is hidden. To script it, set
