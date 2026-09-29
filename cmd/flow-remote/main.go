@@ -393,6 +393,8 @@ func pair(ctx context.Context, args []string) error {
 		fmt.Printf("QR code saved to %s\n", *png)
 	}
 	fmt.Printf("\nScan with your phone's camera, or open:\n%s\n\n", link)
+	fmt.Println("On an iPhone: the first time, this opens Safari. Add flow-remote to your Home Screen,")
+	fmt.Println("open it from there, tap \"Scan the QR code\", and scan this code again.")
 	fmt.Printf("This Mac's fingerprint: %s\n", mac.Fingerprint())
 	fmt.Printf("The code expires in %s. Waiting for the phone...\n", pairing.TTL)
 

@@ -253,7 +253,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v23";
+const BUILD = "v24";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -394,7 +394,14 @@ function backgroundRender() {
 }
 
 function screen() {
-  if (state.offer) return pairScreen();
+  if (state.offer) {
+    // On an iPhone, a home-screen app keeps its own storage apart from
+    // Safari. A pairing made in a Safari tab leaves its keys in Safari, so
+    // send people to the installed app first. (Android's installed app
+    // shares the browser's storage, so pairing in the tab is fine there.)
+    if (env.kind === "phone-browser" && env.os === "ios" && !continueInBrowser) return installScreen(true);
+    return pairScreen();
+  }
   if (state.view === "scan") return scanScreen();
   const p = current();
   if (!p || state.view === "welcome") return welcomeScreen();
@@ -452,13 +459,17 @@ function welcomeScreen() {
   return guideScreen(adding);
 }
 
-// installScreen is for a phone in a browser tab: install first.
-function installScreen() {
+// installScreen is for a phone in a browser tab: install first. forPairing
+// means a pairing link brought them here.
+function installScreen(forPairing = false) {
   const steps = env.os === "ios"
     ? [
       h("li", {}, "Tap the ", h("b", {}, "Share"), " button in Safari's toolbar."),
       h("li", {}, "Choose ", h("b", {}, "Add to Home Screen"), ", then ", h("b", {}, "Add"), "."),
-      h("li", {}, "Open ", h("b", {}, "flow-remote"), " from your home screen, and pair from there."),
+      forPairing
+        ? h("li", {}, "Open ", h("b", {}, "flow-remote"), " from your home screen, tap ", h("b", {}, "Scan the QR code"),
+          ", and scan the code on your Mac again. If it has expired, run ", h("code", {}, "flow-remote pair"), " for a new one.")
+        : h("li", {}, "Open ", h("b", {}, "flow-remote"), " from your home screen, and pair from there."),
     ]
     : [
       installPrompt
@@ -472,7 +483,7 @@ function installScreen() {
       h("img", { class: "logo", src: "icon.svg", alt: "" }),
       h("h1", { class: "brand" }, "flow-remote")),
     h("section", { class: "card guide" },
-      h("h2", {}, env.os === "ios" ? "You're in Safari on an iPhone" : "You're in a browser on an Android phone"),
+      h("h2", {}, env.os === "ios" ? (forPairing ? "Install the app, then pair from it" : "You're in Safari on an iPhone") : "You're in a browser on an Android phone"),
       h("p", { class: "muted" }, env.os === "ios"
         ? "An app on your home screen keeps its own storage, separate from Safari. Pair from the installed app, or its keys would stay behind in Safari."
         : "Installed, it opens full screen and keeps checking for replies while it's open."),
