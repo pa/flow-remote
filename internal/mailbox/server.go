@@ -73,8 +73,12 @@ type Server struct {
 	// Ready, if set, gates the API: until it returns nil every call gets
 	// 503, and /v1/health says why.
 	Ready func() error
-	Now   func() time.Time
-	Log   *slog.Logger
+	// Notify, if set, is called with the recipient after each envelope is
+	// stored, so a relay in the same process can act at once instead of on
+	// its next poll.
+	Notify func(to string)
+	Now    func() time.Time
+	Log    *slog.Logger
 
 	limits      limiter
 	keys        keyCache
@@ -146,6 +150,20 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		mux.ServeHTTP(w, r)
+	})
+}
+
+// PublicHandler is Handler without the Mac's routes, for a listener
+// phones reach. `flow-remote serve` gives the relay and the CLI the full
+// Handler on a unix socket only this user can open.
+func (s *Server) PublicHandler() http.Handler {
+	h := s.Handler()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/relay/") || r.URL.Path == "/v1/macs" {
+			s.fail(w, http.StatusNotFound, "not found")
+			return
+		}
+		h.ServeHTTP(w, r)
 	})
 }
 
@@ -659,6 +677,9 @@ func (s *Server) put(w http.ResponseWriter, ctx context.Context, e envelope.Enve
 	if err := s.Store.PutEnvelope(ctx, e, s.now()); err != nil {
 		s.storeErr(w, err)
 		return
+	}
+	if s.Notify != nil {
+		s.Notify(e.To)
 	}
 	w.WriteHeader(http.StatusAccepted)
 }

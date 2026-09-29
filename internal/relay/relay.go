@@ -404,3 +404,36 @@ func (s *State) MarkForwarded(id, task string, now time.Time) error {
 	}
 	return os.Rename(tmp, s.path)
 }
+
+// maxBackoff caps the wait between retries while the mailbox is
+// unreachable (Wi-Fi down, Mac asleep), so the relay is back within this
+// long of the network returning.
+const maxBackoff = 30 * time.Second
+
+// Loop runs Tick until ctx ends. A receive on wake starts the next round
+// at once: `flow-remote serve` signals it when a phone posts, so messages
+// don't wait for the poll interval.
+func (r *Relay) Loop(ctx context.Context, wake <-chan struct{}) error {
+	backoff := time.Second
+	for {
+		wait, err := r.Tick(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			r.log("tick", "err", err)
+			wait, backoff = backoff, min(backoff*2, maxBackoff)
+		} else {
+			backoff = time.Second
+		}
+		t := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return ctx.Err()
+		case <-wake:
+			t.Stop()
+		case <-t.C:
+		}
+	}
+}

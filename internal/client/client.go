@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -25,6 +26,18 @@ type Client struct {
 	Mac     *identity.Mac
 	HTTP    *http.Client
 	Now     func() time.Time
+}
+
+// Unix is an HTTP client that reaches a server on the unix socket at path,
+// whatever host a URL names. `flow-remote serve` listens there for the
+// relay and the CLI.
+func Unix(path string) *http.Client {
+	return &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", path)
+		},
+	}}
 }
 
 // Record mirrors mailbox.Record's JSON.

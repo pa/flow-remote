@@ -1,10 +1,17 @@
 // Command flow-remote is the Mac side of flow-remote: it sets up this Mac,
-// pairs phones, and runs the relay that carries messages between the
-// mailbox and flow sessions.
+// pairs phones, and runs the relay that carries messages between phones
+// and flow sessions.
 //
+// Two ways to run. With a tunnel, this process is the server: it serves
+// the phone app and the mailbox itself, and phones reach it through the
+// tunnel. With a hosted mailbox, the relay polls one running elsewhere.
+//
+//	flow-remote setup --tunnel none --listen ADDR --public-url URL
+//	                                      serve from this machine; you route
+//	                                      URL to ADDR (TLS must end here)
 //	flow-remote setup --mailbox URL [--app URL]
-//	                                      save where the mailbox lives and
-//	                                      register this Mac: the first Mac with
+//	                                      use a hosted mailbox and register
+//	                                      this Mac: the first Mac with
 //	                                      FLOW_REMOTE_SETUP_TOKEN, others with
 //	                                      FLOW_REMOTE_INVITE from `invite`
 //	flow-remote pair [--png FILE]               show a QR code (and optionally save it
@@ -48,15 +55,54 @@ import (
 	"github.com/pa/flow-remote/internal/pairing"
 	"github.com/pa/flow-remote/internal/protocol"
 	"github.com/pa/flow-remote/internal/relay"
+	"github.com/pa/flow-remote/internal/serve"
+	"github.com/pa/flow-remote/internal/tunnel"
 )
 
 // version is set at release build time (-ldflags "-X main.version=v1.2.3").
 var version = "dev"
 
 type config struct {
-	Mailbox string `json:"mailbox"`
-	App     string `json:"app"`
-	Name    string `json:"name,omitempty"` // what phones call this Mac
+	// Tunnel set means this machine serves phones itself. Empty means a
+	// hosted mailbox at Mailbox.
+	Tunnel    string   `json:"tunnel,omitempty"`
+	Listen    string   `json:"listen,omitempty"`     // tunnel "none": where to listen
+	PublicURL string   `json:"public_url,omitempty"` // tunnel "none": what phones use
+	Origins   []string `json:"origins,omitempty"`    // other app addresses allowed to call this one
+	Mailbox   string   `json:"mailbox,omitempty"`
+	App       string   `json:"app,omitempty"`
+	Name      string   `json:"name,omitempty"` // what phones call this Mac
+}
+
+func (c config) local() bool { return c.Tunnel != "" }
+
+// mailboxClient reaches this Mac's mailbox: the socket of the running
+// serve, or the hosted one.
+func mailboxClient(c config, mac *identity.Mac) *client.Client {
+	if c.local() {
+		return serve.Client(home(), mac)
+	}
+	return &client.Client{BaseURL: c.Mailbox, Mac: mac}
+}
+
+// explain turns "nothing on the socket" into what to do about it.
+func explain(err error) error {
+	if serve.NotRunning(err) {
+		return serve.ErrNotRunning
+	}
+	return err
+}
+
+// servedURL is the address the running serve reported for phones.
+func servedURL() (string, error) {
+	b, err := os.ReadFile(filepath.Join(home(), "serve.json"))
+	if err != nil {
+		return "", serve.ErrNotRunning
+	}
+	var v struct {
+		URL string `json:"url"`
+	}
+	return v.URL, json.Unmarshal(b, &v)
 }
 
 func main() {
@@ -103,7 +149,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: flow-remote <command>
-  setup --mailbox URL [--name N]    set up this Mac (FLOW_REMOTE_SETUP_TOKEN or FLOW_REMOTE_INVITE)
+  setup --mailbox URL [--name N]    set up this Mac with a hosted mailbox (FLOW_REMOTE_SETUP_TOKEN or FLOW_REMOTE_INVITE)
   pair [--png FILE]                 show a QR code and enroll a phone
   start | stop | status             run the relay in the background (launchd)
   run                               run the relay in the foreground
@@ -133,7 +179,7 @@ func loadConfig() (config, error) {
 	var c config
 	b, err := os.ReadFile(filepath.Join(home(), "config.json"))
 	if errors.Is(err, os.ErrNotExist) {
-		return c, errors.New("run `flow-remote setup --mailbox URL` first")
+		return c, errors.New("run `flow-remote setup` first")
 	}
 	if err != nil {
 		return c, err
@@ -143,21 +189,23 @@ func loadConfig() (config, error) {
 
 func setup(args []string) error {
 	fs := flag.NewFlagSet("setup", flag.ExitOnError)
-	mb := fs.String("mailbox", "", "mailbox base URL")
-	app := fs.String("app", "", "phone app URL (default: the mailbox URL)")
+	tun := fs.String("tunnel", "", "serve phones from this machine through this tunnel: none")
+	listen := fs.String("listen", "127.0.0.1:8484", "tunnel none: address to listen on")
+	public := fs.String("public-url", "", "tunnel none: the https URL phones use to reach --listen")
+	mb := fs.String("mailbox", "", "hosted mailbox base URL")
+	app := fs.String("app", "", "phone app URL (default: this machine's, or the mailbox's)")
 	name := fs.String("name", "", "what phones call this Mac (default: its hostname)")
 	fs.Parse(args)
+	if *tun != "" {
+		return setupLocal(*tun, *listen, *public, *app, *name)
+	}
 	if *mb == "" {
-		return errors.New("--mailbox is required")
+		return errors.New("--tunnel or --mailbox is required")
 	}
 	if *app == "" {
 		*app = *mb // the mailbox serves the phone app too
 	}
-	b, _ := json.MarshalIndent(config{Mailbox: strings.TrimRight(*mb, "/"), App: strings.TrimRight(*app, "/"), Name: *name}, "", "  ")
-	if err := os.MkdirAll(home(), 0o700); err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(home(), "config.json"), b, 0o600); err != nil {
+	if err := writeConfig(config{Mailbox: strings.TrimRight(*mb, "/"), App: strings.TrimRight(*app, "/"), Name: *name}); err != nil {
 		return err
 	}
 	mac, err := identity.LoadOrCreateMac(store())
@@ -165,8 +213,6 @@ func setup(args []string) error {
 		return err
 	}
 	fmt.Printf("saved. This Mac is %s, fingerprint %s\n", mac.ID, mac.Fingerprint())
-	// The token comes from the environment so it stays out of shell
-	// history and the process list.
 	// Secrets come from the environment so they stay out of shell history
 	// and the process list.
 	tok, inv := os.Getenv("FLOW_REMOTE_SETUP_TOKEN"), os.Getenv("FLOW_REMOTE_INVITE")
@@ -180,6 +226,38 @@ func setup(args []string) error {
 	}
 	fmt.Println("registered with the mailbox. Next: `flow-remote start`, then `flow-remote pair`.")
 	return nil
+}
+
+// setupLocal saves the settings for serving from this machine. Nothing to
+// register: `run` makes this Mac the only tenant of its own mailbox.
+func setupLocal(tun, listen, public, app, name string) error {
+	if tun != "none" {
+		return fmt.Errorf("--tunnel %q: want none", tun)
+	}
+	if !strings.HasPrefix(public, "https://") {
+		return errors.New("--public-url must be the https address phones use; the app needs HTTPS to install and to use the camera")
+	}
+	c := config{Tunnel: tun, Listen: listen, PublicURL: strings.TrimRight(public, "/"), App: strings.TrimRight(app, "/"), Name: name}
+	if err := writeConfig(c); err != nil {
+		return err
+	}
+	mac, err := identity.LoadOrCreateMac(store())
+	if err != nil {
+		return err
+	}
+	fmt.Printf("saved. This Mac is %s, fingerprint %s\n", mac.ID, mac.Fingerprint())
+	fmt.Printf("flow-remote will listen on %s. Route %s to it, with TLS ending on this machine\n", listen, c.PublicURL)
+	fmt.Println("or a proxy you run: whoever ends TLS can change the app's code.")
+	fmt.Println("Next: `flow-remote start`, then `flow-remote pair`.")
+	return nil
+}
+
+func writeConfig(c config) error {
+	b, _ := json.MarshalIndent(c, "", "  ")
+	if err := os.MkdirAll(home(), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(home(), "config.json"), b, 0o600)
 }
 
 func pair(ctx context.Context, args []string) error {
@@ -199,13 +277,29 @@ func pair(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	mb := &client.Client{BaseURL: cfg.Mailbox, Mac: mac}
+	mb := mailboxClient(cfg, mac)
 
-	offer := pairing.NewOffer(mac, "", time.Now()) // the phone uses its own origin
-	if err := mb.OpenPair(ctx, offer.PairID); err != nil {
-		return fmt.Errorf("opening the pairing at the mailbox: %w", err)
+	// The app opens the pairing link. When it's served from somewhere other
+	// than this Mac's mailbox (another of your machines), the offer says
+	// where the mailbox is.
+	appURL, mailboxURL := cfg.App, ""
+	if cfg.local() {
+		served, err := servedURL()
+		if err != nil {
+			return err
+		}
+		if appURL == "" {
+			appURL = served
+		}
+		if appURL != served {
+			mailboxURL = served
+		}
 	}
-	link := offer.Link(cfg.App)
+	offer := pairing.NewOffer(mac, mailboxURL, time.Now())
+	if err := mb.OpenPair(ctx, offer.PairID); err != nil {
+		return fmt.Errorf("opening the pairing at the mailbox: %w", explain(err))
+	}
+	link := offer.Link(appURL)
 	code, err := qr.Encode(link, qr.L)
 	if err != nil {
 		return err
@@ -300,11 +394,6 @@ func printQR(c *qr.Code) {
 	fmt.Print(b.String())
 }
 
-// maxBackoff caps the wait between retries while the mailbox is
-// unreachable (Wi-Fi down, Mac asleep), so the relay is back within this
-// long of the network returning.
-const maxBackoff = 30 * time.Second
-
 func run(ctx context.Context) error {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -345,29 +434,45 @@ func run(ctx context.Context) error {
 
 	r := &relay.Relay{
 		Mac: mac, Devices: devs, Guard: guard, Allow: allow, State: state, Audit: audit, Log: log,
-		Mailbox: &client.Client{BaseURL: cfg.Mailbox, Mac: mac},
-		Flow:    flowcli.CLI{},
+		Flow: flowcli.CLI{},
 	}
-	syncDevices(ctx, r.Mailbox.(*client.Client), devs, log)
+	if cfg.local() {
+		return runLocal(ctx, cfg, r, log)
+	}
+	mb := &client.Client{BaseURL: cfg.Mailbox, Mac: mac}
+	r.Mailbox = mb
+	syncDevices(ctx, mb, devs, log)
 	log.Info("relay running", "mac", mac.ID, "devices", len(devs.List()), "mailbox", cfg.Mailbox)
-	backoff := time.Second
-	for {
-		wait, err := r.Tick(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			log.Warn("tick", "err", err)
-			wait, backoff = backoff, min(backoff*2, maxBackoff)
-		} else {
-			backoff = time.Second
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(wait):
-		}
+	return r.Loop(ctx, nil)
+}
+
+// runLocal serves phones from this machine: the app, the mailbox and the
+// relay in this one process.
+func runLocal(ctx context.Context, cfg config, r *relay.Relay, log *slog.Logger) error {
+	var tun tunnel.Tunnel
+	switch cfg.Tunnel {
+	case "none":
+		tun = tunnel.Local{Addr: cfg.Listen, URL: cfg.PublicURL}
+	default:
+		return fmt.Errorf("config.json: tunnel %q: want none", cfg.Tunnel)
 	}
+	origins := cfg.Origins
+	if cfg.App != "" {
+		origins = append(origins, cfg.App)
+	}
+	statePath := filepath.Join(home(), "serve.json")
+	defer os.Remove(statePath)
+	return serve.Run(ctx, serve.Options{
+		Home: home(), Mac: r.Mac, Relay: r, Tunnel: tun, Origins: origins,
+		DeviceIdle: 30 * 24 * time.Hour, Log: log,
+		Listening: func(url string) {
+			b, _ := json.Marshal(map[string]string{"url": url})
+			if err := os.WriteFile(statePath, b, 0o600); err != nil {
+				log.Warn("serve.json", "err", err)
+			}
+			log.Info("serving", "mac", r.Mac.ID, "devices", len(r.Devices.List()), "url", url)
+		},
+	})
 }
 
 // syncDevices makes the mailbox's device list match the Keychain's, in
@@ -493,12 +598,12 @@ func revoke(args []string) error {
 	if err != nil {
 		return err
 	}
-	mb := &client.Client{BaseURL: cfg.Mailbox, Mac: mac}
+	mb := mailboxClient(cfg, mac)
 	if err := mb.RevokeDevice(context.Background(), args[0]); errors.Is(err, client.ErrNotFound) {
 		fmt.Println("the mailbox doesn't have it either; nothing more to do.")
 		return nil
 	} else if err != nil {
-		fmt.Printf("the mailbox didn't get the revocation (%v); the relay retries it when it next starts.\n", err)
+		fmt.Printf("the mailbox didn't get the revocation (%v); the relay retries it when it next starts.\n", explain(err))
 		return nil
 	}
 	fmt.Println("the mailbox rejects its requests too.")
@@ -514,10 +619,22 @@ func adminClient() (*client.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &client.Client{BaseURL: cfg.Mailbox, Mac: mac}, nil
+	return mailboxClient(cfg, mac), nil
+}
+
+// hostedOnly refuses the tenant commands when this machine serves itself:
+// its mailbox has one tenant, this Mac.
+func hostedOnly() error {
+	if cfg, err := loadConfig(); err == nil && cfg.local() {
+		return errors.New("this Mac serves its own phones, so there are no other tenants to manage")
+	}
+	return nil
 }
 
 func invite(ctx context.Context) error {
+	if err := hostedOnly(); err != nil {
+		return err
+	}
 	c, err := adminClient()
 	if err != nil {
 		return err
@@ -542,6 +659,9 @@ trust whoever runs this mailbox: it serves the phone app's code.
 }
 
 func tenants(ctx context.Context) error {
+	if err := hostedOnly(); err != nil {
+		return err
+	}
 	c, err := adminClient()
 	if err != nil {
 		return err
@@ -570,6 +690,9 @@ func tenants(ctx context.Context) error {
 func removeTenant(ctx context.Context, args []string) error {
 	if len(args) != 1 {
 		return errors.New("usage: flow-remote remove-tenant <mac-id>")
+	}
+	if err := hostedOnly(); err != nil {
+		return err
 	}
 	c, err := adminClient()
 	if err != nil {

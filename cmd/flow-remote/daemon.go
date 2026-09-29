@@ -127,7 +127,15 @@ func agentStatus() error {
 		fmt.Printf("relay agent: %s (pid %s)\n", state, pid)
 	}
 	if cfg, err := loadConfig(); err == nil {
-		fmt.Printf("mailbox:     %s\n", cfg.Mailbox)
+		if cfg.local() {
+			url, err := servedURL()
+			if err != nil {
+				url = "(not serving)"
+			}
+			fmt.Printf("serving:     %s (tunnel %s)\n", url, cfg.Tunnel)
+		} else {
+			fmt.Printf("mailbox:     %s\n", cfg.Mailbox)
+		}
 	}
 	log := filepath.Join(home(), "relay.log")
 	if b, err := os.ReadFile(log); err == nil {
