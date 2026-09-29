@@ -267,6 +267,16 @@ func TestReplayAndStrangers(t *testing.T) {
 	forged, _ := envelope.Seal(pt, s2, r.device.ID, r.relay.Mac.ID, r.relay.Mac.Box.PublicKey(), r.now.UnixMilli())
 	r.store.PutEnvelope(context.Background(), *forged, r.now)
 	r.tick()
+	// The stranger is kept for one round in case it's a phone paired a
+	// moment ago; the next round reads the registry again and drops it.
+	if n, _ := r.store.CountEnvelopes(context.Background(), r.relay.Mac.ID, r.now); n != 1 {
+		t.Fatalf("after one round, %d envelopes wait; want the stranger's", n)
+	}
+	r.now = r.now.Add(reloadMin + time.Second)
+	r.tick()
+	if n, _ := r.store.CountEnvelopes(context.Background(), r.relay.Mac.ID, r.now); n != 0 {
+		t.Fatalf("stranger not dropped after a fresh read: %d waiting", n)
+	}
 	if len(r.flow.sent) != 1 {
 		t.Fatalf("stranger or forgery delivered: %q", r.flow.sent)
 	}

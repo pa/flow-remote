@@ -85,14 +85,17 @@ const (
 	reloadMin   = 2 * time.Second
 )
 
-func (r *Relay) reloadDevices(minAge time.Duration) {
+// reloadDevices re-reads the registry unless it was read within minAge,
+// and reports whether it did.
+func (r *Relay) reloadDevices(minAge time.Duration) bool {
 	if r.now().Sub(r.devicesAt) < minAge {
-		return
+		return false
 	}
 	r.devicesAt = r.now()
 	if err := r.Devices.Reload(); err != nil {
 		r.log("reload devices", "err", err)
 	}
+	return true
 }
 
 func (r *Relay) now() time.Time {
@@ -145,8 +148,14 @@ func (r *Relay) handle(ctx context.Context, e envelope.Envelope, forceSessions *
 	}
 	dev, ok := r.Devices.Active(e.From)
 	if !ok {
-		r.reloadDevices(reloadMin)
+		reloaded := r.reloadDevices(reloadMin)
 		dev, ok = r.Devices.Active(e.From)
+		if !ok && !reloaded {
+			// Maybe a phone paired a moment ago and the registry was read
+			// just before. Leave it for the next round, which reads it again,
+			// rather than dropping the phone's first message.
+			return false
+		}
 	}
 	if !ok {
 		r.audit("drop", e.From, "", "unknown or revoked device")

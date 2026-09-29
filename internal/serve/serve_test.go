@@ -214,7 +214,10 @@ func TestServeEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := devs.Enroll(dev); err != nil {
+	// `flow-remote pair` is its own process with its own copy of the list;
+	// the relay picks the new phone up from the keystore.
+	pairDevs, _ := identity.LoadDevices(ks)
+	if err := pairDevs.Enroll(dev); err != nil {
 		t.Fatal(err)
 	}
 	if err := mb.PutDevice(ctx, dev); err != nil {
