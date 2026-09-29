@@ -148,8 +148,6 @@ button.inline { color: var(--accent); text-decoration: underline; padding: 0; fo
 @keyframes toast-in { from { transform: translate(-50%, -12px); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
 .back .count { font-size: 13px; font-weight: 600; background: var(--accent); color: #fff; border-radius: 999px; padding: 1px 7px; margin-left: 2px; vertical-align: middle; }
-#fr-debug { position: fixed; z-index: 20; left: 8px; right: 8px; top: calc(env(safe-area-inset-top) + 60px); margin: 0;
-  background: rgba(0, 0, 0, 0.8); color: #9fe870; font: 11px/1.4 ui-monospace, Menlo, monospace; padding: 8px; border-radius: 8px; pointer-events: none; white-space: pre-wrap; }
 .where { font-size: 12px; color: var(--muted); opacity: 0.8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .msg.out .inline { font-size: 13px; }
 main { will-change: auto; }

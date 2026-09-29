@@ -265,7 +265,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v32";
+const BUILD = "v33";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -282,7 +282,6 @@ function fitViewport() {
   html.classList.toggle("kb-open", typing && env.kind !== "desktop");
   const list = root.querySelector(".thread");
   if (list && state.view === "thread") list.scrollTop = list.scrollHeight;
-  if (debugOn) drawDebug();
 }
 if (window.visualViewport) {
   visualViewport.addEventListener("resize", fitViewport);
@@ -300,37 +299,6 @@ document.addEventListener("focusout", (e) => {
   typing = false;
   requestAnimationFrame(() => { window.scrollTo(0, 0); fitViewport(); });
 });
-
-// ---- layout readout (Settings → Show layout numbers) ----
-
-let debugOn = (() => { try { return localStorage.getItem("frDebug") === "1"; } catch { return false; } })();
-
-function drawDebug() {
-  let el = document.getElementById("fr-debug");
-  if (!debugOn) { el?.remove(); return; }
-  if (!el) {
-    el = document.createElement("pre");
-    el.id = "fr-debug";
-    document.body.append(el);
-  }
-  const vv = window.visualViewport;
-  const tv = document.querySelector(".threadview")?.getBoundingClientRect();
-  const comp = document.querySelector(".composer")?.getBoundingClientRect();
-  const probe = document.createElement("div");
-  probe.style.cssText = "position:fixed;padding-bottom:env(safe-area-inset-bottom);padding-top:env(safe-area-inset-top);visibility:hidden";
-  document.body.append(probe);
-  const cs = getComputedStyle(probe);
-  const safe = `${cs.paddingTop} / ${cs.paddingBottom}`;
-  probe.remove();
-  el.textContent = [
-    `build ${BUILD} · ${env.kind} · ${env.os}`,
-    `inner ${innerWidth}x${innerHeight} · screen ${window.screen.width}x${window.screen.height}`,
-    `vv ${vv ? `${Math.round(vv.width)}x${Math.round(vv.height)} top ${Math.round(vv.offsetTop)}` : "n/a"} · scrollY ${Math.round(scrollY)}`,
-    `safe top/bottom ${safe} · typing ${typing} · kb-open ${document.documentElement.classList.contains("kb-open")}`,
-    tv ? `thread ${Math.round(tv.top)}..${Math.round(tv.bottom)}` : "",
-    comp ? `composer ${Math.round(comp.top)}..${Math.round(comp.bottom)}` : "",
-  ].filter(Boolean).join("\n");
-}
 
 // ---- reply indicators ----
 
@@ -1088,15 +1056,6 @@ function envLabel() {
 function settingsScreen() {
   return h("main", {},
     bar("Settings", { back: goBack }),
-    h("div", { class: "pad" }, h("button", {
-      class: "link",
-      onclick: () => {
-        debugOn = !debugOn;
-        try { localStorage.setItem("frDebug", debugOn ? "1" : "0"); } catch {}
-        drawDebug();
-        render();
-      },
-    }, debugOn ? "Hide layout numbers" : "Show layout numbers")),
     state.pairings.map((p) => h("section", { class: "card" },
       h("h2", {}, macLabel(p), p.mac_id === state.active ? h("span", { class: "chip live" }, "showing") : null),
       h("p", {}, "Computer id: ", h("code", {}, p.mac_id)),
