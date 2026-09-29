@@ -167,6 +167,18 @@ function clock(ms) {
   return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+// whenLabel is a divider's time: "10:42", "Yesterday 10:42", "Mon 10:42",
+// or "12 Sep 10:42".
+function whenLabel(ms) {
+  const d = new Date(ms), now = new Date();
+  const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((day(now) - day(d)) / 86_400_000);
+  const date = days === 0 ? "" : days === 1 ? "Yesterday " : days < 7
+    ? d.toLocaleDateString([], { weekday: "short" }) + " "
+    : d.toLocaleDateString([], { day: "numeric", month: "short" }) + " ";
+  return date + clock(ms);
+}
+
 // ---- navigation ----
 
 // Screens past the sessions list get a history entry, so Android's back
@@ -253,7 +265,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v25";
+const BUILD = "v28";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -356,14 +368,37 @@ function updateAppBadge() {
   } catch {}
 }
 
-function render() {
+// What the last render put on screen, to skip renders that change nothing.
+let shownView = null;
+let shownHTML = "";
+
+// render redraws the current screen. It builds the screen fresh, but only
+// swaps it in if it differs from what's showing, and keeps the scroll
+// position: the app renders on every poll, and most polls change nothing.
+// stickToBottom scrolls an open thread to its newest message even if you'd
+// scrolled up, for a message you just sent or opened the thread for.
+function render({ stickToBottom = false } = {}) {
+  const next = screen();
+  const toast = state.toast ? toastView(state.toast) : null;
+  const html = next.outerHTML + (toast ? toast.outerHTML : "");
+  const sameView = shownView === state.view;
+  if (sameView && html === shownHTML) return;
+
   // Keep a half-typed message, and the search box, with their focus.
   const ta = root.querySelector("textarea");
   const draft = ta ? { value: ta.value, focused: document.activeElement === ta, start: ta.selectionStart, end: ta.selectionEnd } : null;
   const sb = root.querySelector("input.search");
   const searchFocus = sb && document.activeElement === sb ? { start: sb.selectionStart, end: sb.selectionEnd } : null;
-  root.replaceChildren(screen());
-  if (state.toast) root.append(toastView(state.toast));
+  // And where you'd scrolled to.
+  const scrollY = window.scrollY;
+  const list = root.querySelector(".thread");
+  const listTop = list ? list.scrollTop : 0;
+  const atBottom = !list || list.scrollHeight - list.scrollTop - list.clientHeight < 48;
+
+  root.replaceChildren(next);
+  if (toast) root.append(toast);
+  shownView = state.view;
+  shownHTML = html;
   document.documentElement.classList.toggle("in-thread", state.view === "thread");
   updateAppBadge();
   fitViewport();
@@ -372,15 +407,17 @@ function render() {
     nextSb.focus();
     nextSb.setSelectionRange(searchFocus.start, searchFocus.end);
   }
+  if (sameView) window.scrollTo(0, scrollY);
   if (state.view === "thread") {
-    const list = root.querySelector(".thread");
-    if (list) list.scrollTop = list.scrollHeight;
-    const next = root.querySelector("textarea");
-    if (draft && next) {
-      next.value = draft.value;
+    const nextList = root.querySelector(".thread");
+    // Follow new messages only if you were already at the newest one.
+    if (nextList) nextList.scrollTop = !sameView || stickToBottom || atBottom ? nextList.scrollHeight : listTop;
+    const nextTa = root.querySelector("textarea");
+    if (draft && nextTa) {
+      nextTa.value = draft.value;
       if (draft.focused) {
-        next.focus();
-        next.setSelectionRange(draft.start, draft.end);
+        nextTa.focus();
+        nextTa.setSelectionRange(draft.start, draft.end);
       }
     }
   }
@@ -411,13 +448,9 @@ function screen() {
   return sessionsScreen(p);
 }
 
-// flow's wave, from flow-bar, at the top of the Settings page. Built once
-// and reused: render() rebuilds the screen on every poll, and a fresh <img>
-// each time flickers while it decodes.
-let markEl = null;
+// flow's wave, from flow-bar, at the top of the Settings page.
 function brandMark() {
-  markEl ??= h("img", { class: "mark-wave", src: "flow-wave.svg", alt: "flow" });
-  return markEl;
+  return h("img", { class: "mark-wave", src: "flow-wave.svg", alt: "flow" });
 }
 
 function bar(title, { back, sub, backCount, action } = {}) {
@@ -757,8 +790,20 @@ function macLine(p) {
 
 let itemsCache = [];
 
+// Unread counts, worked out once per change of itemsCache rather than once
+// per row on every render.
+let unreadFor = null;
+let unreadFrom = null;
 function unreadCount(mac, task) {
-  return itemsCache.filter((it) => it.mac === mac && it.dir === "in" && !it.read && (!task || it.task === task)).length;
+  if (unreadFrom !== itemsCache) {
+    unreadFor = new Map();
+    for (const it of itemsCache) {
+      if (it.dir !== "in" || it.read) continue;
+      for (const k of [it.mac, `${it.mac}\n${it.task}`]) unreadFor.set(k, (unreadFor.get(k) || 0) + 1);
+    }
+    unreadFrom = itemsCache;
+  }
+  return unreadFor.get(task ? `${mac}\n${task}` : mac) || 0;
 }
 
 function macSwitcher() {
@@ -784,16 +829,23 @@ function sessionsScreen(p) {
   const liveSlugs = new Set(live.map((s) => s.slug));
   const earlier = [...tasksWithItems].filter((t) => !liveSlugs.has(t)).sort();
 
+  // A dot says whether you can message the session; a word says why not.
   const row = (slug, sub, chip, chipClass, marks = {}, where = "") => {
     const n = unreadCount(p.mac_id, slug);
     return h("button", { class: "row", onclick: () => openThread(slug) },
       h("div", { class: "top" },
+        h("span", { class: `dot ${chipClass}`, title: chip, "aria-label": chip }),
         h("span", { class: "slug" }, hl(slug, marks.slug)),
         n ? h("span", { class: "badge" }, n) : null,
-        h("span", { class: `chip ${chipClass}` }, chip)),
+        chipClass === "live" ? null : h("span", { class: "state" }, chip)),
       sub ? h("span", { class: "sub" }, hl(sub, marks.sub)) : null,
       where ? h("span", { class: "where" }, hl(where, marks.where)) : null);
   };
+  // group puts rows in one card under a heading; nothing if there are none.
+  const group = (title, rows, kind = "") => rows.length ? [
+    title ? h("h2", { class: `section ${kind}` }, title) : null,
+    h("div", { class: "group" }, rows),
+  ] : null;
   // project · #tag #tag, the task's place in flow.
   const whereOf = (s) => [s.project, (s.tags || []).map((t) => "#" + t).join(" ")].filter(Boolean).join(" · ");
   const offline = macOffline(p);
@@ -818,20 +870,19 @@ function sessionsScreen(p) {
     const hits = search(q, pool, { slug: 3, sub: 1.5, where: 1 });
     const msgHits = search(q, mine, { body: 1 }).slice(0, 20);
     body = [
-      hits.length ? h("h2", { class: "section" }, "Sessions") : null,
-      hits.map(({ item, field, positions }) => {
+      group("Sessions", hits.map(({ item, field, positions }) => {
         const marks = { [field]: positions };
         return item.live ? liveRow(item, marks) : row(item.slug, "", "not running", "off", marks);
-      }),
-      msgHits.length ? h("h2", { class: "section" }, "Messages") : null,
-      msgHits.map(({ item, positions }) => {
+      })),
+      group("Messages", msgHits.map(({ item, positions }) => {
         const sn = snippet(item.body, positions);
         return h("button", { class: "row", onclick: () => openThread(item.task) },
           h("div", { class: "top" },
+            h("span", { class: "dot ro", "aria-hidden": "true" }),
             h("span", { class: "slug" }, item.task),
-            h("span", { class: "chip ro" }, item.dir === "in" ? "from session" : "you")),
+            h("span", { class: "state" }, item.dir === "in" ? "from session" : "you")),
           h("span", { class: "sub wrap" }, hl(sn.text, sn.positions)));
-      }),
+      })),
       hits.length || msgHits.length ? null : h("p", { class: "muted pad" }, `Nothing matches "${q}".`),
     ];
   } else {
@@ -845,23 +896,21 @@ function sessionsScreen(p) {
     const repliedSet = new Set(replied.map((it) => it.task));
     const liveBySlug = new Map(live.map((s) => [s.slug, s]));
     body = [
-      replied.length ? h("h2", { class: "section new" }, "New replies") : null,
-      replied.map((it) => {
+      group("New replies", replied.map((it) => {
         const s = liveBySlug.get(it.task);
         const n = unreadCount(p.mac_id, it.task);
         return h("button", { class: "row", onclick: () => openThread(it.task) },
           h("div", { class: "top" },
+            h("span", { class: "dot new", "aria-hidden": "true" }),
             h("span", { class: "slug" }, it.task),
             h("span", { class: "badge" }, n),
             h("span", { class: "meta" }, ago(it.ts))),
           h("span", { class: "preview" }, it.body),
           s ? (whereOf(s) ? h("span", { class: "where" }, whereOf(s)) : null) : h("span", { class: "sub" }, "not running"));
-      }),
-      replied.length && live.some((s) => !repliedSet.has(s.slug)) ? h("h2", { class: "section" }, "Sessions") : null,
+      }), "new"),
       live.length ? null : h("p", { class: "muted pad" }, "No live sessions reported yet."),
-      live.filter((s) => !repliedSet.has(s.slug)).map((s) => liveRow(s)),
-      earlier.filter((t) => !repliedSet.has(t)).length ? h("h2", { class: "section" }, "Not running") : null,
-      earlier.filter((t) => !repliedSet.has(t)).map((slug) => row(slug, "", "not running", "off")),
+      group(replied.length ? "Sessions" : "", live.filter((s) => !repliedSet.has(s.slug)).map((s) => liveRow(s))),
+      group("Not running", earlier.filter((t) => !repliedSet.has(t)).map((slug) => row(slug, "", "not running", "off"))),
     ];
   }
 
@@ -892,18 +941,31 @@ function threadScreen(p) {
   const items = itemsCache.filter((it) => it.mac === p.mac_id && it.task === task).sort((a, b) => a.ts - b.ts);
   const canSend = Boolean(session?.can_send);
 
-  const bubble = (it) => {
+  // Messages from one side within a few minutes form a run: tight
+  // spacing, and the time only under the last one. A gap of an hour or
+  // more gets a divider with the time.
+  const RUN_MS = 5 * 60_000;
+  const GAP_MS = 60 * 60_000;
+  const sameRun = (a, b) => a && b && a.dir === b.dir && Math.abs(b.ts - a.ts) < RUN_MS;
+  const bubble = (it, i) => {
+    const prev = items[i - 1], next = items[i + 1];
+    const last = !sameRun(it, next);
+    const run = `${sameRun(prev, it) ? " cont" : ""}${last ? "" : " more"}`;
+    const divider = !prev || it.ts - prev.ts >= GAP_MS ? h("div", { class: "divider" }, whenLabel(it.ts)) : null;
     if (it.dir === "in") {
-      return h("div", { class: "msg in" },
+      return [divider, h("div", { class: `msg in${run}` },
         h("div", { class: "bubble them" }, it.urgent ? h("span", { class: "chip urgent" }, "urgent") : null, it.body),
-        h("span", { class: "meta" }, `${clock(it.ts)}${it.broadcast ? " · broadcast" : ""}`));
+        last || it.broadcast ? h("span", { class: "meta" }, `${clock(it.ts)}${it.broadcast ? " · broadcast" : ""}`) : null)];
     }
     const label = { sending: "sending…", queued: "waiting for the computer to be reachable", sent: "sent, waiting for the computer", delivered: "in the session's inbox", refused: "refused", failed: "failed", stale: "not delivered", resent: "sent again below" }[it.state] || it.state;
     const bad = it.state === "refused" || it.state === "failed" || it.state === "stale";
-    return h("div", { class: "msg out" },
+    // Each message's own fate matters, so anything but "delivered" shows
+    // even mid-run.
+    const showMeta = last || it.state !== "delivered";
+    return [divider, h("div", { class: `msg out${run}` },
       h("div", { class: "bubble me" }, it.body),
-      h("span", { class: `meta ${bad ? "bad" : ""}` },
-        `${clock(it.ts)} · ${label}${it.reason ? ` · ${it.reason}` : ""}`),
+      showMeta ? h("span", { class: `meta ${bad ? "bad" : ""}` },
+        `${clock(it.ts)} · ${label}${it.reason ? ` · ${it.reason}` : ""}`) : null,
       // The relay won't act on a message that waited too long in the
       // mailbox; sending it again is a deliberate, fresh decision.
       it.state === "stale" && canSend ? h("button", {
@@ -912,7 +974,7 @@ function threadScreen(p) {
           await db.putItem(it);
           await send(p, task, it.body, it.reply_to);
         },
-      }, "Send again") : null);
+      }, "Send again") : null)];
   };
 
   // One rounded field with the send button inside it, like Messages: the
@@ -1032,7 +1094,7 @@ async function send(p, task, body, replyTo) {
   const item = { id: `c:${clientId}`, mac: p.mac_id, task, dir: "out", body, ts: Date.now(), state: "sending", reply_to: replyTo || null };
   await db.putItem(item);
   itemsCache = await db.allItems();
-  render();
+  render({ stickToBottom: true });
   await post(p, item);
 }
 
