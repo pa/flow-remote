@@ -317,7 +317,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v40";
+const BUILD = "v41";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -1202,8 +1202,33 @@ function settingsScreen() {
         h("code", {}, `flow-remote revoke ${p.device_id}`), " on it."))),
     h("div", { class: "pad stack" },
       h("button", { class: "primary", onclick: () => go("welcome") }, "Pair another computer"),
-      h("button", { class: "link", onclick: forgetEverything }, "Delete everything on this phone")),
+      h("button", { class: "link", onclick: forgetEverything }, "Delete everything on this phone"),
+      storageLine()),
     aboutSection());
+}
+
+const kb = (n) => (n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+
+// storageLine says how much this app keeps on the phone: its cached files
+// and its messages (the rest of what the browser counts is keys and
+// bookkeeping). It fills in once measured.
+function storageLine() {
+  const el = h("p", { class: "muted storage" }, "Measuring storage…");
+  (async () => {
+    let cached = 0;
+    for (const name of await caches.keys()) {
+      const cache = await caches.open(name);
+      for (const req of await cache.keys()) {
+        const res = await cache.match(req);
+        if (res) cached += (await res.clone().blob()).size;
+      }
+    }
+    const used = (await navigator.storage?.estimate?.())?.usage;
+    const n = itemsCache.length;
+    el.textContent = `${used ? `This app uses ${kb(used)} on this phone: ` : "On this phone: "}` +
+      `the app ${kb(cached)}, and ${n} message${n === 1 ? "" : "s"}.`;
+  })().catch(() => { el.textContent = ""; });
+  return el;
 }
 
 const REPO = "https://github.com/pa/flow-remote";

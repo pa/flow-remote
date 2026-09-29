@@ -237,3 +237,4 @@ main { will-change: auto; }
 .msg.in::before { content: "↩"; position: absolute; left: -30px; top: 50%; transform: translateY(-50%) scale(0.7);
   font-size: 17px; color: var(--muted); opacity: 0; transition: opacity 0.12s, transform 0.12s; }
 .msg.in.swipe-ready::before { opacity: 1; color: var(--accent); transform: translateY(-50%) scale(1); }
+.storage { font-size: 13px; text-align: center; }
