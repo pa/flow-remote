@@ -49,3 +49,39 @@ func TestShellIsEmbedded(t *testing.T) {
 		}
 	}
 }
+
+// BUILD in app.js and CACHE in sw.js must move together: the app loads
+// from its cache first, so a new build under the old cache name never
+// reaches a phone.
+func TestBuildMatchesCache(t *testing.T) {
+	app, _ := fs.ReadFile(web.Files, "js/app.js")
+	sw, _ := fs.ReadFile(web.Files, "sw.js")
+	build := regexp.MustCompile(`const BUILD = "(v\d+)"`).FindSubmatch(app)
+	cache := regexp.MustCompile(`const CACHE = "flow-remote-(v\d+)"`).FindSubmatch(sw)
+	if build == nil || cache == nil || string(build[1]) != string(cache[1]) {
+		t.Fatalf("BUILD %q and CACHE %q differ; bump both", build, cache)
+	}
+}
+
+// The app's cached files stay small: it's what a phone keeps offline.
+func TestShellSize(t *testing.T) {
+	const limit = 600 << 10
+	sw, _ := fs.ReadFile(web.Files, "sw.js")
+	shell := regexp.MustCompile(`(?s)const SHELL = \[(.*?)\];`).FindSubmatch(sw)
+	total := 0
+	for _, m := range regexp.MustCompile(`"\./([^"]*)"`).FindAllSubmatch(shell[1], -1) {
+		name := string(m[1])
+		if name == "" {
+			continue
+		}
+		b, err := fs.ReadFile(web.Files, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		total += len(b)
+	}
+	t.Logf("app shell: %d KB", total>>10)
+	if total > limit {
+		t.Fatalf("app shell is %d KB, over %d KB", total>>10, limit>>10)
+	}
+}

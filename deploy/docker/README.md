@@ -1,5 +1,9 @@
 # Self-host the mailbox with Docker
 
+> This is the hosted mailbox, for phones that can't run Tailscale. The
+> default setup needs no server: `flow-remote` serves the phone from your
+> computer over your tailnet (see [../tailscale](../tailscale)).
+
 Runs the mailbox, MongoDB and Caddy on any machine with Docker and a
 public address. Caddy gets a TLS certificate automatically. The phone app
 needs HTTPS, because WebCrypto and the camera only work on secure pages.
@@ -13,7 +17,7 @@ docker compose up -d
 curl https://$DOMAIN/v1/health   # "ok" once MongoDB is connected
 ```
 
-Then follow "Set up your computer" in the main README, with
+Then follow "Without Tailscale: a hosted mailbox" in the main README, with
 `--mailbox https://$DOMAIN`.
 
 Once your first computer is registered, clear `MAILBOX_SETUP_TOKEN` in `.env`

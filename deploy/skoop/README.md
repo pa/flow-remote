@@ -1,5 +1,9 @@
 # Deploy the mailbox with skoop
 
+> This is the hosted mailbox, for phones that can't run Tailscale. The
+> default setup needs no server: `flow-remote` serves the phone from your
+> computer over your tailnet (see [../tailscale](../tailscale)).
+
 [skoop](https://skoop.facets.cloud) is one way to run the mailbox. It puts
 it on GCP: Cloud Run for the container, Firestore (MongoDB-compatible) for
 storage, and Firebase Hosting for TLS and an optional custom domain. The
@@ -44,7 +48,7 @@ skoop app status                  # the *.web.app URL
 curl https://<your-url>/v1/health # "ok" once Firestore is connected
 ```
 
-Then follow "Set up your computer" in the main README, using that URL.
+Then follow "Without Tailscale: a hosted mailbox" in the main README, using that URL.
 
 ## Custom domain
 

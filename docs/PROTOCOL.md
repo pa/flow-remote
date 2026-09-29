@@ -1,9 +1,13 @@
 # Envelope protocol, v1
 
-Every message between the phone and the Mac travels as one envelope. The
-mailbox stores and forwards envelopes. It can read the routing fields and
-nothing else, and it can't forge or alter an envelope without the receiver
-noticing.
+Every message between the phone and the computer travels as one envelope.
+Whatever carries envelopes, the server in `flow-remote run` or a hosted
+mailbox, can read the routing fields and nothing else. It can't forge or
+alter an envelope without the receiver noticing.
+
+Field names say `mac` (`mac_id`, `mac_sign_pub`) for the computer's side.
+That's the name the protocol started with. It's kept so existing pairings
+keep working, and it means any computer, not only a Mac.
 
 Two implementations must agree on every byte:
 `internal/envelope/envelope.go` (Mac) and `web/js/envelope.js` (phone).
@@ -125,3 +129,59 @@ Scoping, enforced by the mailbox:
   revokes its devices and deletes its mail. A Mac can't remove itself.
 
 Ids are also checked by prefix: a device key can't call relay endpoints.
+
+## Pairing offer
+
+The QR code encodes `<app URL>/#pair=<base64url JSON>`. The fragment never
+reaches a server.
+
+| Field | Meaning |
+| --- | --- |
+| `v` | 1 |
+| `mac_id`, `mac_sign_pub`, `mac_box_pub` | the computer's id and public keys; the phone pins these |
+| `pair_id` | the slot the enrollment goes into |
+| `secret` | 16 random bytes; the phone HMACs its enrollment with it |
+| `exp` | expiry, unix ms (2 minutes) |
+| `mailbox` | where this computer's API is, when it isn't the app's own origin (https only); empty otherwise |
+
+## Messages inside envelopes
+
+The plaintext of every envelope after pairing is one JSON object with a
+`kind`. `internal/protocol` and `web/js/app.js` speak the same fields.
+
+| Kind | Direction | Fields |
+| --- | --- | --- |
+| `send` | phone → computer | `client_id` (the phone's id for its bubble), `task` (slug), `body` (1–4000 characters), `reply_to` (a flow message id this answers, optional) |
+| `sync` | phone → computer | none; asks for a fresh session list |
+| `paired` | computer → phone | `mac_name`; pairing is confirmed |
+| `sessions` | computer → phone | `sessions`: `slug`, `name`, `project`, `tags`, `waiting_on`, `can_send` (always true since the allowlist was removed) |
+| `status` | computer → phone | `client_id`, `task`, `state` (`delivered`, `refused`, `failed`, `stale`), `reason`, `flow_id` (the id flow gave the message) |
+| `mail` | computer → phone | `mail`: `flow_id`, `task`, `body`, `urgent`, `broadcast`, `created_at`, `reply_to` (the flow id of the message it answers) |
+
+The relay accepts a `send`'s `reply_to` only if it's a message it
+forwarded from that same session. With a valid one it runs
+`flow message user/<slug> --reply-to <id>` and marks that message read.
+A `send` whose envelope is more than 10 minutes old comes back `stale` and
+isn't delivered. The phone offers to send it again.
+
+The phone links a `mail`'s `reply_to` to the `flow_id` of its own message,
+to show which message a reply answers.
+
+## Serving from the computer
+
+`flow-remote run`, with a tunnel set up, runs the mailbox server in the
+same process. It has one tenant, the computer itself, registered at start
+without a setup token. The routes and signatures are the ones above.
+
+- **The tunnel's listener** (Tailscale: `:443` on the tsnet device, with
+  TLS ending in the process) serves the app's files and the phone's
+  routes only: `/v1/pair/{pair}`, `/v1/envelopes`, `/v1/ack`,
+  `/v1/status` and `/v1/health`. `/v1/macs` and `/v1/relay/*` get a 404
+  there. `X-Forwarded-For` is ignored, so every client is limited by its
+  own address.
+- **The unix socket** `~/.flow-remote/mailbox.sock` (mode 0600) serves
+  every route. The relay and the CLI (`pair`, `devices`, `revoke`) use it,
+  signing as the computer, as they would with a hosted mailbox.
+- **CORS** allows the app origins set with `setup --app`, so an app
+  installed from one computer can reach another's API. Signatures, not the
+  origin, authenticate requests.

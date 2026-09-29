@@ -6,9 +6,9 @@
 // the phone app and the mailbox itself, and phones reach it through the
 // tunnel. With a hosted mailbox, the relay polls one running elsewhere.
 //
-//	flow-remote setup --tunnel tailscale [--name N]
-//	                                      serve from this machine over your
-//	                                      tailnet; asks for a single-use auth
+//	flow-remote setup [--name N]          serve from this machine over your
+//	                                      tailnet (--tunnel tailscale, the
+//	                                      default); asks for a single-use auth
 //	                                      key tagged tag:flow-remote
 //	flow-remote setup --tunnel none --listen ADDR --public-url URL
 //	                                      serve from this machine; you route
@@ -156,15 +156,14 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: flow-remote <command>
-  setup --tunnel tailscale [--name N]
-                                    serve this computer's phones over your tailnet (asks for an auth key)
-  setup --mailbox URL [--name N]    set up this computer with a hosted mailbox (FLOW_REMOTE_SETUP_TOKEN or FLOW_REMOTE_INVITE)
+  setup [--name N]                  serve this computer's phones over your tailnet (asks for a Tailscale auth key)
+  setup --mailbox URL [--name N]    use a hosted mailbox instead (FLOW_REMOTE_SETUP_TOKEN or FLOW_REMOTE_INVITE)
+  start | stop | status             run in the background (launchd), stop, check
+  run                               run in the foreground
   pair [--png FILE]                 show a QR code and enroll a phone
-  start | stop | status             run the relay in the background (launchd)
-  run                               run the relay in the foreground
   devices [--all] | revoke <id>     list this computer's phones (--all: with revoked), or revoke one
-  invite                            (admin) a single-use code for another computer
-  tenants | remove-tenant <mac-id>  (admin) list or remove computers
+  invite                            (hosted mailbox, admin) a single-use code for another computer
+  tenants | remove-tenant <mac-id>  (hosted mailbox, admin) list or remove computers
   version                           print the version`)
 	os.Exit(2)
 }
@@ -205,11 +204,12 @@ func setup(args []string) error {
 	app := fs.String("app", "", "phone app URL (default: this machine's, or the mailbox's)")
 	name := fs.String("name", "", "what phones call this computer (default: its hostname)")
 	fs.Parse(args)
+	// Serving over your tailnet is the default; --mailbox is the hosted way.
+	if *tun == "" && *mb == "" {
+		*tun = "tailscale"
+	}
 	if *tun != "" {
 		return setupLocal(*tun, *listen, *public, *app, *name)
-	}
-	if *mb == "" {
-		return errors.New("--tunnel or --mailbox is required")
 	}
 	if *app == "" {
 		*app = *mb // the mailbox serves the phone app too

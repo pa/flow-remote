@@ -1,48 +1,72 @@
 # Design notes
 
-flow-remote lets a phone send messages to flow sessions on a Mac and get
-their replies, through a cloud mailbox that can't read or forge anything.
-The byte-level format is in [PROTOCOL.md](PROTOCOL.md). This file records
-the choices and the tools we compared against.
+flow-remote lets a phone send messages to flow sessions on a computer and
+get their replies. The byte-level format is in [PROTOCOL.md](PROTOCOL.md).
+This file records how it's put together, the choices behind it, and the
+tools we compared against.
 
 ## What runs where
 
+By default, `flow-remote` serves the phone itself, over the tailnet.
+
 ```
- phone (PWA)                   skoop app on GCP                     Mac
- device keys  ── HTTPS ──▶  Firebase Hosting ─▶ Cloud Run  ◀── polls ──  relay
- (non-extractable)          "mailbox": app files + API              Keychain keys
-                                    │                               flow message
-                                Firestore                           user/<slug>
-                    envelopes, public keys, last-seen                    │
-                                                                      sessions
+ phone (PWA)                                 your computer
+ device keys           ── Tailscale ──▶  flow-remote run (one process)
+ (non-extractable)       WireGuard,        ├─ tsnet device, :443 TLS ── app files + phone API
+ app from its cache      TLS ends here     ├─ mailbox server + bbolt (mailbox.db)
+                                           │     └─ unix socket (0600) ◀── relay, pair, devices, revoke
+                                           └─ relay ── flow message / flow inbox ── sessions
 ```
 
-- **Phone:** a web app. It seals each message to the Mac and signs it with
-  its device key.
-- **Mailbox:** stores sealed envelopes until they're collected. Every call
-  is signed; there's no login.
-- **Relay** (`flow-remote start`): checks the signature and replay list, opens the envelope,
-  and runs `flow message`. Session mail
-  goes back to the phone the same way.
+- **Phone:** a web app, installed to the home screen. It seals each message
+  to the computer, signs it with its device key, and signs every request.
+  It opens from its cache when the computer can't be reached.
+- **tsnet:** Tailscale's Go library, inside the process. The process is its
+  own tailnet device with a software network stack. The computer gets no
+  VPN interface, and nothing else on it becomes reachable. TLS ends here,
+  so only this computer can serve or change the app's code.
+- **Mailbox server:** the same code as the hosted mailbox, with this
+  computer as its only tenant and a bbolt file for storage. Phones reach
+  only the phone routes. The computer's own routes are on a unix socket.
+- **Relay:** checks each envelope's signature and the replay list, opens
+  it, and runs `flow message`. It reads the human's inbox with
+  `flow inbox --as user --all` and forwards sessions' mail to the phone.
+  A post from a phone wakes it at once.
 
-The database exists because the phone and Mac are rarely online together
-and Cloud Run drops in-memory state when it scales to zero. It holds
-ciphertext, public keys, 2-minute pairing slots and last-seen times, and
-no message text or private keys.
+For phones without Tailscale, there's a hosted mailbox:
+
+```
+ phone (PWA)  ── HTTPS ──▶  mailbox (Cloud Run + Firestore, or Docker + MongoDB)  ◀── polls ──  relay
+                            sealed envelopes, public keys, last-seen                       on the computer
+```
+
+Its database exists because the phone and the computer are rarely online
+together, and Cloud Run drops in-memory state when it scales to zero. It
+holds ciphertext, public keys, 2-minute pairing slots and last-seen times.
+It holds no message text and no private keys. It serves the app too, so
+its operator can change the app's code.
 
 ## Decisions
 
 | Decision | Why |
 | --- | --- |
 | Per-device keys, not a shared account key | a lost phone is revoked on its own (`flow-remote revoke`); nothing else has to rotate |
-| Every message signed and sealed | the mailbox can't read, forge or splice messages |
-| Replay window of 7 days, not 5 minutes | a 5-minute window dropped every message sent while the Mac slept |
-| No sign-in; requests signed by device or Mac key | a login protected nothing secret; signatures keep strangers out |
-| Polling, adaptive 3s/60s | an always-open Cloud Run request costs about $45–60/month |
-| Pub/Sub streaming pull later | the Mac needs a credential scoped to one subscription; skoop can't issue one yet (reported) |
-| Each Mac a tenant; invites, not a shared token | your other Macs and other people's are separate by construction; an invite registers exactly one Mac |
-| Mailbox is a plain container; deploy targets in `deploy/` | skoop is one host among several (see deploy/skoop, deploy/docker) |
-| Every live session reachable; no allowlist | the user's choice (2026-09-29). Any paired phone can message any live session, customer sessions with skipped permissions included, so revoking a lost phone is the only limit |
+| Every message signed and sealed | whatever carries it (Tailscale's relays, a mailbox) can't read, forge or splice messages |
+| Replay window of 7 days, not 5 minutes | a 5-minute window dropped every message sent while the computer slept |
+| No sign-in; requests signed by device or computer key | a login protected nothing secret; signatures keep strangers out |
+| Serve from the computer over Tailscale, by default (2026-09-29) | no server to run or pay for, nothing public, and TLS ends on the computer, so nobody in between can change the app's code |
+| tsnet inside the process, not the Tailscale app | only this process joins the tailnet; the computer's other services stay unreachable, and the computer doesn't need the Tailscale app |
+| A tagged, single-use auth key, never a flag, never saved | tagged devices don't expire after 180 days, and the key is useless after the join |
+| The mailbox server reused in-process, over a unix socket | the relay and the CLI keep the one signed API; internal/relay doesn't know which mode it's in |
+| bbolt for the computer's store | one file, crash-safe; it holds one person's queues, so scanning is fine |
+| Every live session reachable; no allowlist (2026-09-29) | the user's choice. Any paired phone can message any live session, customer sessions with skipped permissions included, so revoking a lost phone is the only limit |
+| Forward mail even if already read | another session's `flow inbox pop` can read the human's queue first; the relay keeps its own record of what it forwarded |
+| The app loads from its cache first | a request to a sleeping computer over Tailscale hangs rather than fails, and the app must open anyway |
+| "Waiting" means no answer yet | flow can't say when a session reads its inbox (Facets-cloud/flow#100); the evidence is a reply naming the message, or failing that any later reply |
+| Say why a computer is unreachable, judged from how the request failed | a tailnet name isn't in public DNS, so with Tailscale off the request fails at once; a computer that's down gives no answer until the 10 s timeout |
+| On an iPhone, pair in the installed app, not in Safari | a home-screen app keeps its storage apart from Safari, and keys made in Safari would stay there |
+| Polling every 3 s while the app is open | simple, and cheap on a tailnet; with the hosted mailbox, an always-open Cloud Run request would cost about $45–60/month |
+| Hosted mailbox: each computer a tenant, with invites | your other computers and other people's are separate by construction; an invite registers exactly one |
 
 ## Prior art we checked
 
@@ -87,33 +111,33 @@ Read from `docs/encryption.md`, `apps/cli/src/api/encryption.ts`,
 
 | | Happier | flow-remote |
 | --- | --- | --- |
-| Keys | one account key on every device | a key per device; only the Mac reads |
+| Keys | one account key on every device | a key per device; only the computer reads |
 | Lost phone | rotate the account key | revoke that device |
 | Authenticity | AES-GCM: any key holder can write | each message signed; replays caught |
 | Pairing | QR + temporary key + HMAC secret | the same shape: QR + keys + HMAC one-time secret |
-| Multiple machines / people | built in: accounts are key-identified | per-Mac tenants with single-use invites |
+| Multiple machines / people | built in: accounts are key-identified | per-computer tenants with single-use invites (hosted mailbox) |
 | Phone app | native, so pairing doesn't trust a web origin | web app, which does |
-| Delivery | WebSockets | polling |
+| Delivery | WebSockets | polling, woken at once on the computer |
 
 ### What we're borrowing
 
 - **Tenants identified by keys (built).** In Happier an
   account is a key pair and the relay scopes everything to it. flow-remote
-  does the same per Mac:
-  a phone is bound to the Mac that enrolled it, can only reach that Mac's
-  queue, and a Mac can only manage its own phones. Your other Macs and
-  other people's Macs are then separate by construction.
+  does the same per computer:
+  a phone is bound to the computer that enrolled it, can only reach that
+  computer's queue, and a computer can only manage its own phones. Your other computers and
+  other people's are then separate by construction.
 - **Pairing stays as it is.** Happier converged on the same QR + temporary
   key + HMAC secret flow, which is a useful check on ours. We already
   enforce the authenticated form; there's no legacy path to downgrade to.
-- **The web-origin weakness is real.** The mailbox serves the app's
-  JavaScript, so a hostile operator could ship code that uses a paired
-  phone's key while it's open. Happier's answer is native apps. Ours, for
-  now, is saying so plainly (README), refusing phone messages that waited
-  more than 10 minutes (so a held message can't be released later), and
-  later the Phase 2 Mac-side policy with Face ID approvals for anything that
-  writes. Serving the app from a separate origin the user controls would
-  also close most of it.
+- **The web-origin weakness is real, and Tailscale mostly closes it.**
+  Whoever serves the app's JavaScript could ship code that uses a paired
+  phone's key while it's open. Happier's answer is native apps. Serving
+  from the computer over Tailscale means TLS ends on your computer, so
+  nobody else can serve that code. A hosted mailbox still can, and the
+  README says so plainly. Phone messages that waited more than 10 minutes
+  are refused, so a held message can't be released later. A Face ID lock
+  on sending is still to come.
 
 What we're not borrowing: the shared account key. It makes multi-device
 sync easy, but it means a stolen phone holds the key to everything.

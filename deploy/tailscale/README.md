@@ -66,7 +66,7 @@ In the [Tailscale admin console](https://login.tailscale.com/admin):
 ## 2. Set up the computer
 
 ```bash
-flow-remote setup --tunnel tailscale --name "My laptop"
+flow-remote setup --name "My laptop"      # --tunnel tailscale is the default
 ```
 
 Paste the auth key when asked. Input is hidden. To script it, set
@@ -82,18 +82,32 @@ already has.
 Then:
 
 ```bash
-flow-remote start      # runs at login, restarts if it crashes
+flow-remote start      # in the background: runs at login, restarts if it crashes
+flow-remote status     # the address phones use, and the last log lines
 flow-remote pair       # shows a QR code
 ```
 
 ## 3. Set up the phone
 
-Install the Tailscale app, sign in to the same tailnet, and turn it on. Scan
-the QR code and check that the fingerprints match. Then add the app to your
-Home Screen.
+1. Install the Tailscale app, sign in to the same tailnet, and turn it on.
+2. On an iPhone, the first scan with the camera opens Safari. It shows how
+   to add flow-remote to your Home Screen. Do that, open the app from the
+   Home Screen, and scan again from inside it. An installed app keeps its
+   storage apart from Safari, and the keys have to live in the app. On
+   Android you can pair in the browser.
+3. Check that the fingerprints match, and type `y` on the computer.
 
-iOS runs one VPN at a time. If your phone also needs a work VPN, the two
-will get in each other's way.
+Tailscale on the phone only carries traffic for your tailnet. If
+everything seems to go through it, check that no exit node is selected in
+the app, and that **Override local DNS** is off on the admin console's
+DNS page. iOS runs one VPN at a time, so a work VPN on the phone will get
+in its way.
+
+When the app can't reach the computer, it says why, as far as it can
+tell. A tailnet name isn't in public DNS, so with Tailscale off on the
+phone the request fails at once and the app asks "Is Tailscale on?". A
+computer that's asleep or not running `flow-remote` doesn't answer, and
+the app says so after 10 seconds.
 
 ## Removing it
 

@@ -1,64 +1,44 @@
 # flow-remote
 
 Message your [flow](https://github.com/Facets-cloud/flow) sessions from your
-phone, and get their replies back, through a mailbox that can't read or
-forge messages in transit.
+phone, and get their replies back. `flow-remote` runs on the computer where
+flow runs. It serves a small web app to your phone over your
+[Tailscale](https://tailscale.com) tailnet, and hands your messages to
+sessions with `flow message`. Nothing is exposed to the public internet.
 
 ```
- phone (web app)            mailbox (any host)              your computer
- a key per computer ──HTTPS──▶ stores sealed envelopes ◀── flow-remote relay
- seals + signs              checks signatures,              opens, checks,
- every message              knows only public keys          runs `flow message`
+ phone (web app)  ──Tailscale──▶  flow-remote on your computer  ──▶  flow sessions
+ a key per computer               its own tailnet device,             flow message
+ seals + signs every message      one HTTPS port                      user/<slug>
 ```
 
 - **End to end.** Every message is sealed to its recipient (P-256 ECDH,
-  AES-256-GCM) and signed by its sender (P-256 ECDSA). The mailbox sees who
-  talks to whom and when, and nothing else.
-- **No accounts.** computers and phones prove who they are by signing each
-  request. The mailbox holds only public keys.
-- **Tenants.** Each computer is its own tenant. A phone belongs to the computer that
-  paired it and can only reach that computer. Your other computers, and other
-  people's, are separate.
-- **Per-device revocation.** `flow-remote revoke` cuts off one phone. Its
-  key signs nothing afterwards.
+  AES-256-GCM) and signed by its sender (P-256 ECDSA). Tailscale's
+  WireGuard encrypts the connection too, and TLS ends inside `flow-remote`.
+- **Pairing by QR code.** The phone gets the computer's keys from a QR code
+  shown in your terminal, and you compare fingerprints on both screens.
+- **No accounts.** Phones prove who they are by signing each request with
+  their own key. `flow-remote revoke` cuts one off.
+- **The app on your phone.** Once installed, it opens from the phone's
+  cache even when the computer is asleep. It shows your live sessions,
+  where each of your messages is (sending, in the session's inbox, or
+  waiting behind others), and each reply linked to the message it answers.
 
-**What you still trust the mailbox for.** The mailbox also serves the phone
-app's code. Whoever runs it (you, if you deploy your own) could ship a
-modified app that uses a paired phone's key while it's open, and so send
-messages as that phone. It still can't read messages already sent, or
-impersonate your computer. Run your own mailbox, or only join one run by
-someone you trust. On a shared mailbox, invited computers are isolated from
-each other but not from its operator.
+**A paired phone is a key to your sessions.** A message from the phone
+reaches an agent that can run tools on your computer, sometimes with
+permissions skipped, and any paired phone can message any live session.
+If you lose a phone, revoke it straight away (see
+[If you lose a phone](#if-you-lose-a-phone)).
 
-Details: [docs/DESIGN.md](docs/DESIGN.md) covers the architecture,
-decisions and prior art, and [docs/PROTOCOL.md](docs/PROTOCOL.md) the byte
+Details: [docs/DESIGN.md](docs/DESIGN.md) covers the architecture and the
+decisions behind it, and [docs/PROTOCOL.md](docs/PROTOCOL.md) the byte
 formats.
 
-## Or: serve from your computer over Tailscale
+## 1. Install
 
-You don't need a mailbox at all if your phone runs Tailscale. `flow-remote`
-can join your tailnet as its own device and serve the app and API from the
-computer, with nothing on the public internet. See
-[deploy/tailscale](deploy/tailscale). The rest of this page covers a hosted
-mailbox.
-
-## 1. Run a mailbox
-
-The mailbox is one container: the API plus the phone app. Pick a host:
-
-- **[deploy/skoop](deploy/skoop)**: Cloud Run, Firestore and Firebase
-  Hosting on GCP, including a custom domain.
-- **[deploy/docker](deploy/docker)**: Docker Compose with MongoDB and Caddy
-  on any machine.
-- **Anything else** that runs a container over HTTPS: see
-  [Mailbox configuration](#mailbox-configuration).
-
-Keep the `MAILBOX_SETUP_TOKEN` you set. Your first computer needs it.
-
-## 2. Set up your computer
-
-You need [flow](https://github.com/Facets-cloud/flow) on the computer. Install
-`flow-remote` from a release, or build it.
+You need [flow](https://github.com/Facets-cloud/flow) on the computer.
+flow-remote runs on macOS today. Linux needs a key store and a systemd
+service, which aren't done yet.
 
 **From a release** (Apple Silicon shown; use `darwin_amd64` on an Intel Mac):
 
@@ -87,101 +67,170 @@ git clone https://github.com/pa/flow-remote && cd flow-remote
 go install ./cmd/flow-remote        # installs to $(go env GOPATH)/bin
 ```
 
-Then set up the computer. The first computer on a mailbox uses its setup token and
-becomes the admin:
+The phone app is built into the binary, so there's nothing else to deploy.
+
+## 2. Prepare your tailnet (once)
+
+In the Tailscale admin console, do three things:
+
+- turn on MagicDNS and HTTPS Certificates
+- add a `tag:flow-remote` with a rule that lets only your devices reach it
+  on port 443
+- create a single-use auth key with that tag
+
+[deploy/tailscale](deploy/tailscale) has the exact settings and a policy to
+paste in.
+
+## 3. Set up the computer
 
 ```bash
-FLOW_REMOTE_SETUP_TOKEN=<token> flow-remote setup --mailbox https://flow.example.com --name "Work laptop"
+flow-remote setup --name "Work laptop"
 ```
 
-Keys go in the login Keychain (service `flow-remote`). Settings and logs
-go in `~/.flow-remote/`. The Keychain items are readable by other programs
-you run, so this protects the keys about as well as file permissions do.
-It doesn't isolate them from your own user.
+Paste the auth key when asked. Input is hidden, and the key isn't saved.
+Setup joins your tailnet as a device called `flow-remote-work-laptop`,
+fetches its HTTPS certificate, and prints the address phones will use,
+like `https://flow-remote-work-laptop.<tailnet>.ts.net`. The name is part
+of that address, so pick it once.
 
-## 3. Start the relay
+The computer's keys and its list of paired phones go in the login Keychain
+(service `flow-remote`). Everything else is in `~/.flow-remote/`. Programs
+you run can read those Keychain items, so they're protected about as well
+as your files are, not isolated from your own user.
+
+## 4. Run it in the background
 
 ```bash
 flow-remote start     # a launchd agent: runs now, at every login, and restarts on a crash
-flow-remote status    # is it running? the last few log lines
+flow-remote status    # running? the address phones use, and the last log lines
 flow-remote stop      # stop it and remove it from login
 ```
 
 `flow-remote run` runs it in the foreground instead, which is handy for
-debugging. Only one relay runs at a time.
+watching the log. Only one runs at a time for a given home folder.
 
-## 4. Pair your phone
+The computer has to be awake for messages to go through. To keep a Mac
+awake while it's plugged in, go to System Settings > Battery > Options and
+turn on "Prevent automatic sleeping on power adapter when the display is
+off".
 
-1. Open the mailbox URL on your phone. On an iPhone, tap Share, then
-   **Add to Home Screen**, and open it from there, because that's where its
-   keys will live.
-2. On the computer, run `flow-remote pair`. It shows a QR code for 2 minutes
-   (`--png FILE` saves it as an image as well).
-3. In the app, tap **Scan the QR code**, or **Take a photo of the QR code**
-   if the live camera won't start. Then tap **Pair**.
-4. Check that the fingerprints on the two screens match, and type `y` on
+## 5. Pair your phone
+
+1. Install the Tailscale app on the phone, sign in to the same tailnet, and
+   turn it on.
+2. On the computer, run `flow-remote pair`. It shows a QR code for 2
+   minutes (`--png FILE` saves it as an image as well).
+3. **First time on an iPhone:**
+   1. Scan the code with the camera. It opens Safari, which shows how to
+      add flow-remote to your Home Screen.
+   2. Add it, and open the app from the Home Screen. An installed app keeps
+      its storage apart from Safari, and that's where its keys have to live.
+   3. Scan again from inside the app.
+
+   On Android you can pair in the browser and install after.
+4. In the app, tap **Scan the QR code** (or **Take a photo of the QR code**
+   if the live camera won't start), then **Pair**.
+5. Check that the fingerprints on the two screens match, and type `y` on
    the computer.
 
-The phone now lists your live sessions, and you can message any of them.
-A message from the phone reaches an agent that can run tools on your
-computer, so treat a paired phone like a key to it: if you lose one,
-revoke it straight away (see [If you lose a phone](#if-you-lose-a-phone)).
+## Using the app
 
-## 5. More computers, yours or anyone's
+- **Sessions.** The main screen lists your live flow sessions, with
+  **New replies** first. A session holding a message of yours that hasn't
+  been answered sits under **Waiting for a reply**, with a line saying
+  where the message is.
+- **Threads.** Each message you send shows its state: sending, waiting for
+  the computer, or "waiting in the session's inbox" with its place in the
+  queue ("2 of 3") until the session answers it. flow can't yet say when a
+  session reads its inbox, so a reply is the only evidence it did.
+- **Replies.** A session's reply opens with a quote of the message it
+  answers, and tapping the quote jumps to it. To answer a particular
+  message, tap it or swipe it to the right. Your message then goes with
+  `--reply-to`, and the message you answered is marked read in flow.
+- **When the computer can't be reached,** the app says why, as far as it
+  can tell. Either the phone is offline, Tailscale is off on the phone, or
+  the computer isn't answering (asleep, or `flow-remote` isn't running).
+  Messages you write wait on the phone and go when the computer is back,
+  for up to 10 minutes. After that the app asks you to send again.
+- **Updates.** A new build of `flow-remote` serves a new app. The phone
+  picks it up when the app comes to the front, when the computer is
+  reachable again, or within 5 minutes, and reloads by itself.
 
-On an admin computer:
+## More computers
+
+Each computer runs its own `flow-remote` with its own tailnet name. To
+reach several from one app, point the others at the first one's app when
+you set them up:
 
 ```bash
-flow-remote invite        # a single-use code, valid for 24 hours
+flow-remote setup --name "Home desktop" --app https://flow-remote-work-laptop.<tailnet>.ts.net
 ```
 
-On the new computer, after installing:
-
-```bash
-FLOW_REMOTE_INVITE=<code> flow-remote setup --mailbox https://flow.example.com --name "Home desktop"
-flow-remote start && flow-remote pair
-```
-
-Pair from the same phone with **Settings → Pair another computer**. The app
-keeps a separate key per computer and shows a switcher.
-
-Admin commands: `flow-remote tenants` lists computers, and
-`flow-remote remove-tenant <mac-id>` removes one, together with its phones
-and its mail.
-
-Once your first computer is set up, clear `MAILBOX_SETUP_TOKEN` on the mailbox.
-Invites cover everything after that.
+`flow-remote pair` on that computer then gives a QR code that opens your
+existing app. The app keeps a separate key per computer and shows a
+switcher. In the app, **Settings > Pair another computer** opens the
+scanner.
 
 ## If you lose a phone
 
-On the computer it's paired with, list its phones and revoke the lost one:
+On each computer it's paired with, list its phones and revoke the lost one:
 
 ```bash
-flow-remote devices
+flow-remote devices     # phones, with when each last checked in
 flow-remote revoke <device-id>
 ```
 
-The mailbox and the relay both refuse that key from then on. A phone
-that's gone unused for `MAILBOX_DEVICE_IDLE_DAYS` (default 30) stops
-working anyway. A phone that's revoked or expired comes back with **Pair
-again**, which gives it a new key.
+The computer refuses that key from then on. A phone that's gone unused for
+30 days stops working anyway. A revoked or expired phone comes back with
+**Pair again**, which gives it a new key.
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| `setup --mailbox URL [--name N]` | save the mailbox and register this computer (`FLOW_REMOTE_SETUP_TOKEN` or `FLOW_REMOTE_INVITE`) |
-| `start` / `stop` / `status` | run the relay as a launchd agent, stop it, check it |
-| `run` | run the relay in the foreground |
+| `setup [--name N] [--app URL]` | join your tailnet and serve phones from this computer (the default, `--tunnel tailscale`) |
+| `setup --mailbox URL [--name N]` | use a hosted mailbox instead (see below) |
+| `start` / `stop` / `status` | run in the background as a launchd agent, stop it, check it |
+| `run` | run in the foreground |
 | `pair [--png FILE]` | show a QR code and enroll a phone |
-| `devices [--all]` / `revoke <device-id>` | list this computer's active phones with when each last checked in (`--all` adds revoked ones), or cut one off |
-| `invite` | (admin) a single-use code for another computer |
-| `tenants` / `remove-tenant <mac-id>` | (admin) list or remove computers |
+| `devices [--all]` / `revoke <device-id>` | list this computer's phones with when each last checked in (`--all` adds revoked ones), or cut one off |
+| `invite`, `tenants`, `remove-tenant <mac-id>` | hosted mailbox only: an admin's invites and tenants |
 | `version` | print the version |
 
-## Mailbox configuration
+## What's in ~/.flow-remote
 
-| Variable | Meaning |
+| Path | What |
+| --- | --- |
+| `config.json` | the settings `setup` wrote |
+| `tailscale/` | the tailnet device's identity (mode 0700); delete it to leave the tailnet |
+| `mailbox.db` | messages waiting for a phone, pairing slots and last-seen times (sealed envelopes only) |
+| `mailbox.sock` | how `pair`, `devices` and `revoke` reach the running server (mode 0600) |
+| `seen.json`, `forwarded.json` | the replay guard, and which session mail went to the phone |
+| `audit.log`, `relay.log` | what was delivered, refused or forwarded (never message text), and the service's log |
+
+## Without Tailscale: a hosted mailbox
+
+If a phone can't run Tailscale (iOS allows one VPN at a time), a hosted
+mailbox can carry sealed envelopes between the phone and the computer
+instead, and `flow-remote` polls it. The mailbox serves the phone app's
+code, so whoever runs it could change that code. Run your own.
+
+- [deploy/skoop](deploy/skoop): Cloud Run and Firestore on GCP, with a
+  custom domain.
+- [deploy/docker](deploy/docker): Docker Compose with MongoDB and Caddy on
+  any machine.
+
+The first computer registers with the mailbox's setup token and becomes
+its admin. Others join with `flow-remote invite`:
+
+```bash
+FLOW_REMOTE_SETUP_TOKEN=<token> flow-remote setup --mailbox https://flow.example.com --name "Work laptop"
+FLOW_REMOTE_INVITE=<code> flow-remote setup --mailbox https://flow.example.com --name "Home desktop"   # on another computer
+```
+
+Clear `MAILBOX_SETUP_TOKEN` once the first computer is set up.
+
+| Mailbox variable | Meaning |
 | --- | --- |
 | `PORT` | where to listen (default 8080) |
 | `MAILBOX_STORE` | `mongo` in production; `memory` for local runs (refused on Cloud Run) |
@@ -189,18 +238,21 @@ again**, which gives it a new key.
 | `MAILBOX_MONGO_DB` | the database name; defaults to the one in the URI's path |
 | `MAILBOX_SETUP_TOKEN` | registers the first, admin computer; clear it afterwards |
 | `MAILBOX_DEVICE_IDLE_DAYS` | phone keys unused this long stop working (default 30; `0` never) |
-| `MAILBOX_TRUSTED_PROXIES` | CIDRs of front ends whose `X-Forwarded-For` entry names the client, for per-IP limits (default `66.249.64.0/19`, Firebase Hosting's edge) |
-| `MAILBOX_DEBUG_ERRORS` | `1` returns store errors to callers, for diagnosis; otherwise they get a logged reference |
+| `MAILBOX_TRUSTED_PROXIES` | CIDRs of front ends whose `X-Forwarded-For` entry names the client (default `66.249.64.0/19`, Firebase Hosting's edge) |
+| `MAILBOX_DEBUG_ERRORS` | `1` returns store errors to callers, for diagnosis |
 | `MAILBOX_WEB_DIR` | serves the phone app; the Docker image sets `/web` |
 
-Health check: `GET /v1/health` returns `ok` once the store is connected,
-and the error otherwise.
+Health check: `GET /v1/health` returns `ok` once the store is connected.
 
 ## Releases
 
-CI (`.github/workflows/ci.yml`) runs the tests on every push, against a
-real MongoDB, and builds `flow-remote` on macOS and the mailbox's Docker
-image. To publish binaries, push a version tag:
+CI (`.github/workflows/ci.yml`) runs on every push:
+- the Go tests, against a real MongoDB
+- the phone app's tests
+- a macOS build of `flow-remote`
+- the mailbox's Docker image
+
+To publish binaries, push a version tag:
 
 ```bash
 git tag v0.1.0 && git push origin v0.1.0
@@ -213,16 +265,27 @@ version, and attaches them with `checksums.txt` to a GitHub release.
 ## Development
 
 ```bash
-go test ./...                       # includes WebCrypto interop tests under Node
-node --test web/js/*.test.mjs       # the phone app's own tests (fuzzy search)
+go test ./...                       # includes end-to-end serve tests and WebCrypto interop under Node
+node --test web/js/*.test.mjs       # the phone app's own tests
 FLOW_REMOTE_MONGO_URI=mongodb://127.0.0.1:27017 go test ./internal/mailbox/   # the Mongo store
-
-# A local mailbox with the app, in memory:
-MAILBOX_SETUP_TOKEN=dev-token-dev-token-dev-token MAILBOX_WEB_DIR=web go run ./cmd/mailbox
 ```
 
-For a test computer that doesn't touch your Keychain, set
-`FLOW_REMOTE_KEYSTORE=dir FLOW_REMOTE_HOME=/tmp/fr`.
+To try the app on this computer without Tailscale, use a scratch home that
+doesn't touch your Keychain or your real setup:
+
+```bash
+export FLOW_REMOTE_HOME=/tmp/fr FLOW_REMOTE_KEYSTORE=dir
+go build -o bin/flow-remote ./cmd/flow-remote
+./bin/flow-remote setup --tunnel none --listen 127.0.0.1:8484 --public-url http://127.0.0.1:8484
+./bin/flow-remote run               # then, in another shell with the same exports: ./bin/flow-remote pair
+```
+
+Browsers treat `localhost` and `127.0.0.1` as secure, so the app works
+there over plain http. Every other address needs https.
+
+When you change anything under `web/`, bump `BUILD` in `web/js/app.js` and
+`CACHE` in `web/sw.js` together. The app loads from its cache first, so
+without a new build number phones keep the old files.
 
 ## License
 
