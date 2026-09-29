@@ -36,6 +36,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/x/mongo/driver/connstring"
 
 	"github.com/pa/flow-remote/internal/mailbox"
+	"github.com/pa/flow-remote/internal/webapp"
 )
 
 // version is set at release build time (-ldflags "-X main.version=v1.2.3").
@@ -107,7 +108,7 @@ func run(log *slog.Logger) error {
 	}
 	handler := s.Handler()
 	if dir := os.Getenv("MAILBOX_WEB_DIR"); dir != "" {
-		handler = withApp(handler, dir)
+		handler = webapp.Handler(handler, os.DirFS(dir))
 	}
 	// Timeouts so slow clients can't hold the single instance's connections.
 	srv := &http.Server{Addr: "0.0.0.0:" + port, Handler: handler,
@@ -127,22 +128,6 @@ func run(log *slog.Logger) error {
 }
 
 // withApp serves the phone app next to the API.
-func withApp(api http.Handler, dir string) http.Handler {
-	files := http.FileServer(http.Dir(dir))
-	mux := http.NewServeMux()
-	mux.Handle("/v1/", api)
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// Revalidate on every load, so the CDN and the service worker
-		// pick up a deploy right away.
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("X-Frame-Options", "DENY")
-		files.ServeHTTP(w, r)
-	})
-	return mux
-}
-
 func openStore(ctx context.Context) (mailbox.Store, error) {
 	switch kind := os.Getenv("MAILBOX_STORE"); kind {
 	case "", "memory":
