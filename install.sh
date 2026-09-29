@@ -3,8 +3,8 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/pa/flow-remote/main/install.sh | sh
 #
-# While the repository is private, run it with the GitHub CLI signed in
-# (`gh auth login`); it downloads with that. Settings:
+# If the GitHub CLI is signed in, it downloads with that; otherwise curl.
+# Settings:
 #   FLOW_REMOTE_INSTALL_DIR  where to put it (default ~/.local/bin)
 #   FLOW_REMOTE_VERSION      a release tag instead of the latest, e.g. v0.2.0
 #
@@ -38,7 +38,7 @@ if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
 else
   if [ -z "$WANT" ]; then
     tag=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)
-    [ -n "$tag" ] || die "no release found (while the repository is private, install gh and run \`gh auth login\` first)"
+    [ -n "$tag" ] || die "no release found"
   else
     tag=$WANT
   fi

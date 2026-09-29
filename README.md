@@ -48,10 +48,7 @@ curl -fsSL https://raw.githubusercontent.com/pa/flow-remote/main/install.sh | sh
 The script downloads the latest release for your Mac's chip, checks it
 against the release's `checksums.txt`, and installs `flow-remote` to
 `~/.local/bin`. Set `FLOW_REMOTE_INSTALL_DIR` for somewhere else, or
-`FLOW_REMOTE_VERSION=v0.2.0` for a particular release. While the
-repository is private, sign in to the GitHub CLI first (`gh auth login`,
-with an account that can see it) and run the script from a clone:
-`sh install.sh`. It downloads with `gh`.
+`FLOW_REMOTE_VERSION=v0.2.0` for a particular release.
 
 To upgrade later:
 
@@ -253,6 +250,11 @@ there over plain http. Every other address needs https.
 When you change anything under `web/`, bump `BUILD` in `web/js/app.js` and
 `CACHE` in `web/sw.js` together. The app loads from its cache first, so
 without a new build number phones keep the old files.
+
+## Security
+
+To report a vulnerability, see [SECURITY.md](SECURITY.md). It also lists
+the known limits.
 
 ## License
 
