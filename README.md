@@ -34,6 +34,14 @@ Details: [docs/DESIGN.md](docs/DESIGN.md) covers the architecture,
 decisions and prior art, and [docs/PROTOCOL.md](docs/PROTOCOL.md) the byte
 formats.
 
+## Or: serve from your Mac over Tailscale
+
+You don't need a mailbox at all if your phone runs Tailscale. `flow-remote`
+can join your tailnet as its own device and serve the app and API from the
+Mac, with nothing on the public internet. See
+[deploy/tailscale](deploy/tailscale). The rest of this page covers a hosted
+mailbox.
+
 ## 1. Run a mailbox
 
 The mailbox is one container: the API plus the phone app. Pick a host:

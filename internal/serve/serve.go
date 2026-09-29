@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -133,6 +134,9 @@ func Run(ctx context.Context, o Options) error {
 	if err != nil {
 		sl.Close()
 		return fmt.Errorf("starting the tunnel: %w", err)
+	}
+	if c, ok := o.Tunnel.(io.Closer); ok {
+		defer c.Close() // after the servers stop, below
 	}
 
 	public := newServer(cors(dropForwarded(webapp.Handler(srv.PublicHandler(), web.Files)), allowedOrigins(publicURL, o.Origins)))

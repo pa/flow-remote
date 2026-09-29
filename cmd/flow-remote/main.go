@@ -6,6 +6,10 @@
 // the phone app and the mailbox itself, and phones reach it through the
 // tunnel. With a hosted mailbox, the relay polls one running elsewhere.
 //
+//	flow-remote setup --tunnel tailscale [--name N]
+//	                                      serve from this machine over your
+//	                                      tailnet; asks for a single-use auth
+//	                                      key tagged tag:flow-remote
 //	flow-remote setup --tunnel none --listen ADDR --public-url URL
 //	                                      serve from this machine; you route
 //	                                      URL to ADDR (TLS must end here)
@@ -36,6 +40,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -45,6 +50,7 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/term"
 	"rsc.io/qr"
 
 	"github.com/pa/flow-remote/internal/client"
@@ -66,6 +72,7 @@ type config struct {
 	// Tunnel set means this machine serves phones itself. Empty means a
 	// hosted mailbox at Mailbox.
 	Tunnel    string   `json:"tunnel,omitempty"`
+	Hostname  string   `json:"hostname,omitempty"`   // tunnel "tailscale": the tailnet device name
 	Listen    string   `json:"listen,omitempty"`     // tunnel "none": where to listen
 	PublicURL string   `json:"public_url,omitempty"` // tunnel "none": what phones use
 	Origins   []string `json:"origins,omitempty"`    // other app addresses allowed to call this one
@@ -149,6 +156,8 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: flow-remote <command>
+  setup --tunnel tailscale [--name N]
+                                    serve this Mac's phones over your tailnet (asks for an auth key)
   setup --mailbox URL [--name N]    set up this Mac with a hosted mailbox (FLOW_REMOTE_SETUP_TOKEN or FLOW_REMOTE_INVITE)
   pair [--png FILE]                 show a QR code and enroll a phone
   start | stop | status             run the relay in the background (launchd)
@@ -189,7 +198,7 @@ func loadConfig() (config, error) {
 
 func setup(args []string) error {
 	fs := flag.NewFlagSet("setup", flag.ExitOnError)
-	tun := fs.String("tunnel", "", "serve phones from this machine through this tunnel: none")
+	tun := fs.String("tunnel", "", "serve phones from this machine through this tunnel: tailscale or none")
 	listen := fs.String("listen", "127.0.0.1:8484", "tunnel none: address to listen on")
 	public := fs.String("public-url", "", "tunnel none: the https URL phones use to reach --listen")
 	mb := fs.String("mailbox", "", "hosted mailbox base URL")
@@ -231,8 +240,12 @@ func setup(args []string) error {
 // setupLocal saves the settings for serving from this machine. Nothing to
 // register: `run` makes this Mac the only tenant of its own mailbox.
 func setupLocal(tun, listen, public, app, name string) error {
-	if tun != "none" {
-		return fmt.Errorf("--tunnel %q: want none", tun)
+	switch tun {
+	case "tailscale":
+		return setupTailscale(app, name)
+	case "none":
+	default:
+		return fmt.Errorf("--tunnel %q: want tailscale or none", tun)
 	}
 	// Browsers treat localhost as secure, so http is fine there for trying
 	// it out; anywhere else the app needs https to install and use the
@@ -251,6 +264,70 @@ func setupLocal(tun, listen, public, app, name string) error {
 	fmt.Printf("saved. This Mac is %s, fingerprint %s\n", mac.ID, mac.Fingerprint())
 	fmt.Printf("flow-remote will listen on %s. Route %s to it, with TLS ending on this machine\n", listen, c.PublicURL)
 	fmt.Println("or a proxy you run: whoever ends TLS can change the app's code.")
+	fmt.Println("Next: `flow-remote start`, then `flow-remote pair`.")
+	return nil
+}
+
+func tailscaleDir() string { return filepath.Join(home(), "tailscale") }
+
+// setupTailscale joins this machine to the tailnet as its own device. The
+// auth key comes from TS_AUTHKEY or a hidden prompt, never a flag, so it
+// stays out of shell history and the process list, and it isn't saved:
+// after the first join the device's identity is in ~/.flow-remote/tailscale.
+func setupTailscale(app, name string) error {
+	if name == "" {
+		name, _ = os.Hostname()
+		name = strings.TrimSuffix(name, ".local")
+	}
+	host := tunnel.Hostname(name)
+	if prev, err := loadConfig(); err == nil && prev.Tunnel == "tailscale" && prev.Hostname != "" {
+		// Keep the name: it's part of the app's address, and a new one means
+		// pairing every phone again.
+		host = prev.Hostname
+	}
+	ts := &tunnel.Tailscale{Dir: tailscaleDir(), Hostname: host, Logf: func(f string, a ...any) { fmt.Printf(f+"\n", a...) }}
+	if !tunnel.Joined(ts.Dir) {
+		key := os.Getenv("TS_AUTHKEY")
+		if key == "" {
+			fmt.Println("Tailscale auth key: in the admin console, Settings > Keys > Generate auth key,")
+			fmt.Println("single-use, not ephemeral, pre-approved, tagged tag:flow-remote.")
+			fmt.Print("Paste it (input hidden): ")
+			var b []byte
+			var err error
+			if fd := int(os.Stdin.Fd()); term.IsTerminal(fd) {
+				b, err = term.ReadPassword(fd)
+			} else { // piped in, e.g. from a password manager's CLI
+				b, err = bufio.NewReader(os.Stdin).ReadBytes('\n')
+				if errors.Is(err, io.EOF) {
+					err = nil
+				}
+			}
+			fmt.Println()
+			if err != nil {
+				return fmt.Errorf("reading the key: %w", err)
+			}
+			key = strings.TrimSpace(string(b))
+		}
+		if !strings.HasPrefix(key, "tskey-") {
+			return errors.New("that doesn't look like a Tailscale auth key (tskey-...)")
+		}
+		ts.AuthKey = key
+	}
+	fmt.Printf("joining the tailnet as %s...\n", host)
+	url, err := ts.Join(context.Background())
+	if err != nil {
+		return err
+	}
+	c := config{Tunnel: "tailscale", Hostname: host, App: strings.TrimRight(app, "/"), Name: name}
+	if err := writeConfig(c); err != nil {
+		return err
+	}
+	mac, err := identity.LoadOrCreateMac(store())
+	if err != nil {
+		return err
+	}
+	fmt.Printf("saved. This Mac is %s, fingerprint %s\n", mac.ID, mac.Fingerprint())
+	fmt.Printf("Phones on your tailnet will reach it at %s\n", url)
 	fmt.Println("Next: `flow-remote start`, then `flow-remote pair`.")
 	return nil
 }
@@ -454,10 +531,13 @@ func run(ctx context.Context) error {
 func runLocal(ctx context.Context, cfg config, r *relay.Relay, log *slog.Logger) error {
 	var tun tunnel.Tunnel
 	switch cfg.Tunnel {
+	case "tailscale":
+		tun = &tunnel.Tailscale{Dir: tailscaleDir(), Hostname: cfg.Hostname,
+			Logf: func(f string, a ...any) { log.Info(fmt.Sprintf(f, a...)) }}
 	case "none":
 		tun = tunnel.Local{Addr: cfg.Listen, URL: cfg.PublicURL}
 	default:
-		return fmt.Errorf("config.json: tunnel %q: want none", cfg.Tunnel)
+		return fmt.Errorf("config.json: tunnel %q: want tailscale or none", cfg.Tunnel)
 	}
 	origins := cfg.Origins
 	if cfg.App != "" {
