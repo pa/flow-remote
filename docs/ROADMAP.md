@@ -35,3 +35,6 @@ address, so each new URL means pairing again.
 - **Load the QR scanner only when it's opened.** It's 251 KB of the app's
   412 KB cache.
 - **Prune old messages** in the phone's storage.
+- **A split view on wide screens.** On a tablet or a desktop window the app
+  is a 640px phone column. From about 900px wide, the session list could
+  sit beside the open chat, as chat apps do on an iPad.

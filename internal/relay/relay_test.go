@@ -97,7 +97,7 @@ func newRig(t *testing.T) *rig {
 	store.PutDevice(context.Background(), mac.ID, r.device.ID, r.device.SignPub)
 
 	r.flow = &fakeFlow{tasks: []flowcli.Task{
-		{Slug: "phone-dispatch", Name: "dispatcher", Live: true},
+		{Slug: "fix-login-bug", Name: "Fix the login bug", Live: true},
 		{Slug: "floci-local-apply", Name: "floci", Tags: []string{"personal"}, Live: true},
 		{Slug: "fragile-eol-packages", Name: "customer work", Tags: []string{"fragile"}, Live: true},
 	}}
@@ -191,11 +191,11 @@ func byKind(ms []protocol.Msg, kind string) []protocol.Msg {
 
 func TestDeliverAndStatus(t *testing.T) {
 	r := newRig(t)
-	r.phoneSend(protocol.Msg{Kind: protocol.KindSend, ClientID: "c1", Task: "phone-dispatch", Body: "what's waiting on me?"}, r.now.Add(-5*time.Minute))
+	r.phoneSend(protocol.Msg{Kind: protocol.KindSend, ClientID: "c1", Task: "fix-login-bug", Body: "what's waiting on me?"}, r.now.Add(-5*time.Minute))
 	if poll := r.tick(); poll != mailbox.PollActive {
 		t.Fatalf("poll = %v", poll)
 	}
-	if len(r.flow.sent) != 1 || r.flow.sent[0] != "phone-dispatch|[phone · sent 5m ago] what's waiting on me?|" {
+	if len(r.flow.sent) != 1 || r.flow.sent[0] != "fix-login-bug|[phone · sent 5m ago] what's waiting on me?|" {
 		t.Fatalf("flow got %q", r.flow.sent)
 	}
 	got := r.inbox()
@@ -212,7 +212,7 @@ func TestDeliverAndStatus(t *testing.T) {
 		can[s.Slug] = s.CanSend
 	}
 	// Any paired phone may message any live session.
-	if !can["phone-dispatch"] || !can["floci-local-apply"] || !can["fragile-eol-packages"] {
+	if !can["fix-login-bug"] || !can["floci-local-apply"] || !can["fragile-eol-packages"] {
 		t.Fatalf("can_send %v", can)
 	}
 }
@@ -222,7 +222,7 @@ func TestRefusals(t *testing.T) {
 	cases := map[string]protocol.Msg{
 		"not running": {Kind: protocol.KindSend, ClientID: "b", Task: "some-other-task", Body: "x"},
 		"bad slug":    {Kind: protocol.KindSend, ClientID: "c", Task: "../etc; rm", Body: "x"},
-		"empty":       {Kind: protocol.KindSend, ClientID: "d", Task: "phone-dispatch", Body: ""},
+		"empty":       {Kind: protocol.KindSend, ClientID: "d", Task: "fix-login-bug", Body: ""},
 	}
 	for _, m := range cases {
 		r.phoneSend(m, r.now)
@@ -244,7 +244,7 @@ func TestRefusals(t *testing.T) {
 
 func TestReplayAndStrangers(t *testing.T) {
 	r := newRig(t)
-	e := r.phoneSend(protocol.Msg{Kind: protocol.KindSend, Task: "phone-dispatch", Body: "once"}, r.now)
+	e := r.phoneSend(protocol.Msg{Kind: protocol.KindSend, Task: "fix-login-bug", Body: "once"}, r.now)
 	r.tick()
 	// The mailbox deleted it on ack, so an attacker who kept a copy can
 	// post it again. The relay's guard must catch it.
@@ -259,7 +259,7 @@ func TestReplayAndStrangers(t *testing.T) {
 	// mailbox would.
 	// A device that was never enrolled.
 	s2, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	pt, _ := json.Marshal(protocol.Msg{Kind: protocol.KindSend, Task: "phone-dispatch", Body: "hi"})
+	pt, _ := json.Marshal(protocol.Msg{Kind: protocol.KindSend, Task: "fix-login-bug", Body: "hi"})
 	stranger, _ := envelope.Seal(pt, s2, envelope.Route{From: "dev-stranger00", To: r.relay.Mac.ID}, r.relay.Mac.Box.PublicKey(), r.now.UnixMilli())
 	r.store.PutEnvelope(context.Background(), *stranger, r.now)
 
@@ -313,7 +313,7 @@ func TestMailForwardedOnceAndReplyMarksRead(t *testing.T) {
 	}
 }
 
-// Something else reading the human's queue (a dispatch session's `flow
+// Something else reading the human's queue (another session's `flow
 // inbox pop`) marks a reply read before the relay looks. It must still
 // reach the phone; mail read before the relay began keeping track mustn't.
 func TestReplyReadElsewhereStillForwarded(t *testing.T) {
@@ -370,7 +370,7 @@ func TestPicksUpPhonesPairedAfterStart(t *testing.T) {
 	}
 	r.store.PutDevice(context.Background(), r.relay.Mac.ID, dev2.ID, dev2.SignPub)
 
-	pt, _ := json.Marshal(protocol.Msg{Kind: protocol.KindSend, Task: "phone-dispatch", Body: "hi from the new phone"})
+	pt, _ := json.Marshal(protocol.Msg{Kind: protocol.KindSend, Task: "fix-login-bug", Body: "hi from the new phone"})
 	e, _ := envelope.Seal(pt, s2, envelope.Route{From: dev2.ID, To: r.relay.Mac.ID}, r.relay.Mac.Box.PublicKey(), r.now.UnixMilli())
 	r.store.PutEnvelope(context.Background(), *e, r.now)
 	r.tick()
@@ -381,7 +381,7 @@ func TestPicksUpPhonesPairedAfterStart(t *testing.T) {
 
 func TestStaleSendIsHeldForResend(t *testing.T) {
 	r := newRig(t)
-	r.phoneSend(protocol.Msg{Kind: protocol.KindSend, ClientID: "old", Task: "phone-dispatch", Body: "go ahead and push"}, r.now.Add(-3*time.Hour))
+	r.phoneSend(protocol.Msg{Kind: protocol.KindSend, ClientID: "old", Task: "fix-login-bug", Body: "go ahead and push"}, r.now.Add(-3*time.Hour))
 	r.tick()
 	if len(r.flow.sent) != 0 {
 		t.Fatalf("a 3-hour-old command was delivered: %q", r.flow.sent)
@@ -397,7 +397,7 @@ func TestReplyToMustMatchForwardedMail(t *testing.T) {
 	r.flow.unread = []flowcli.Mail{{ID: "abc123", Kind: "message", From: flowcli.Address{Assignee: "user", TaskSlug: "floci-local-apply"}, Body: "q?", CreatedAt: r.now}}
 	r.tick()
 	// Replying from another session, or to an id never forwarded, is refused.
-	r.phoneSend(protocol.Msg{Kind: protocol.KindSend, ClientID: "a", Task: "phone-dispatch", Body: "x", ReplyTo: "abc123"}, r.now)
+	r.phoneSend(protocol.Msg{Kind: protocol.KindSend, ClientID: "a", Task: "fix-login-bug", Body: "x", ReplyTo: "abc123"}, r.now)
 	r.phoneSend(protocol.Msg{Kind: protocol.KindSend, ClientID: "b", Task: "floci-local-apply", Body: "x", ReplyTo: "--urgent"}, r.now)
 	r.tick()
 	if len(r.flow.sent) != 0 || len(r.flow.read) != 0 {

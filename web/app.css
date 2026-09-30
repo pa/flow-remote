@@ -79,12 +79,14 @@ html.in-thread, html.in-thread body { overflow: hidden; height: 100%; overscroll
    the visible area, so the composer sits on the keyboard. visualViewport's
    height can under-report in an installed iOS app when the keyboard is
    down, which left a gap under the composer. */
+/* The chat fills what's visible, keyboard or not. After the keyboard goes
+   away, iOS can leave the layout viewport short of the screen for a while,
+   and a chat pinned to it floats above a gap. */
 .threadview {
   position: fixed; left: 0; right: 0; margin: 0 auto;
-  top: 0; bottom: 0;
+  top: var(--app-top, 0px); height: var(--app-h, 100dvh);
   padding-bottom: 0;
 }
-html.kb-open .threadview { top: var(--app-top, 0px); bottom: auto; height: var(--app-h, 100dvh); }
 .threadview .bar { position: static; }
 .thread { overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
 /* With the keyboard up there's no home indicator to clear. */
@@ -261,7 +263,7 @@ main { will-change: auto; }
 .rq i { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-style: normal;
   font-size: 13.5px; line-height: 1.3; opacity: 0.72; white-space: normal; }
 /* Time and ticks inside the bubble, bottom right. */
-.stamp { float: right; position: relative; top: 5px; margin: 6px -2px -2px 10px; font-size: 11px; line-height: 1;
+.stamp { float: right; position: relative; top: 2px; margin: 6px -2px 0 10px; font-size: 11px; line-height: 1;
   opacity: 0.62; white-space: nowrap; display: inline-flex; gap: 2px; align-items: center; }
 .me .stamp { opacity: 0.8; }
 .ticks { font-size: 11.5px; letter-spacing: -3px; margin-right: 3px; }
@@ -300,7 +302,7 @@ main { will-change: auto; }
 .icon-btn.on { color: var(--accent); background: var(--off-soft); }
 .chatsearch { flex-basis: 100%; display: flex; align-items: center; gap: 4px; margin-top: 8px; }
 .chatsearch .tsearch { flex: 1; min-width: 0; border-radius: 10px; padding: 7px 11px; background: rgba(255, 255, 255, 0.07);
-  border: 1px solid transparent; font-size: 15px; }
+  border: 1px solid transparent; font-size: 16px; }
 .chatsearch .tsearch:focus { outline: none; border-color: rgba(10, 132, 255, 0.6); }
 .chatsearch .count { font-size: 12.5px; color: var(--muted); min-width: 58px; text-align: right; }
 .chatsearch .icon-btn { width: 32px; height: 32px; }
@@ -316,3 +318,7 @@ mark.hit.now { background: #ffd60a; color: #1d1e22; }
 .update-note { border-left: 3px solid var(--accent); background: rgba(255, 255, 255, 0.04);
   border-radius: 10px; padding: 8px 10px; margin: 10px 0; }
 .update-note p { margin: 0 0 6px; }
+
+/* iOS Safari zooms into any field whose text is under 16px when it gets
+   focus. Keep every field at 16px or more. */
+input, textarea, select { font-size: max(16px, 1em) !important; }

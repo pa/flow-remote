@@ -142,7 +142,7 @@ func (c CLI) Message(ctx context.Context, slug, body, replyTo string) (string, e
 }
 
 // Inbox includes mail already read: anything else reading the human's
-// queue (a dispatch session's `flow inbox pop`, say) marks it read, and a
+// queue (another session's `flow inbox pop`, say) marks it read, and a
 // session's reply must still reach the phone.
 func (c CLI) Inbox(ctx context.Context) ([]Mail, error) {
 	out, err := c.run(ctx, "inbox", "--as", "user", "--all", "--json")
