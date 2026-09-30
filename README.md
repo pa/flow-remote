@@ -7,7 +7,7 @@ flow runs. It serves a small web app to your phone over your
 sessions with `flow message`. Nothing is exposed to the public internet.
 
 <p align="center">
-  <a href="docs/demo.mp4"><img src="docs/demo.gif" width="300" alt="The phone app: asking a flow session a question, its answer quoting the question, replying to an earlier message, a reply arriving from another session, search in a chat, and the session list with new replies on top"></a>
+  <a href="docs/demo.mp4"><img src="docs/demo.gif" width="300" alt="The phone app: messaging a flow session, its answer quoting the question, messages queued in the session's inbox, replying to an earlier message, a reply arriving from another session, search in a chat, and the session list with the latest conversation on top"></a>
 </p>
 <p align="center"><sub>The sessions in this demo are staged. <a href="docs/demo.mp4">Watch it in full quality</a>.</sub></p>
 
