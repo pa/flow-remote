@@ -334,7 +334,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v51";
+const BUILD = "v52";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -378,6 +378,9 @@ document.addEventListener("focusout", (e) => {
   if (e.target.tagName !== "TEXTAREA") return;
   typing = false;
   requestAnimationFrame(() => { window.scrollTo(0, 0); fitViewport(); });
+  // And again once the keyboard has finished going down: measured
+  // mid-animation, the chat stays short and leaves a gap below the field.
+  setTimeout(() => { window.scrollTo(0, 0); fitViewport(); }, 350);
 });
 
 // ---- reply indicators ----

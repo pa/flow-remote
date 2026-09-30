@@ -79,12 +79,14 @@ html.in-thread, html.in-thread body { overflow: hidden; height: 100%; overscroll
    the visible area, so the composer sits on the keyboard. visualViewport's
    height can under-report in an installed iOS app when the keyboard is
    down, which left a gap under the composer. */
+/* The chat fills what's visible, keyboard or not. After the keyboard goes
+   away, iOS can leave the layout viewport short of the screen for a while,
+   and a chat pinned to it floats above a gap. */
 .threadview {
   position: fixed; left: 0; right: 0; margin: 0 auto;
-  top: 0; bottom: 0;
+  top: var(--app-top, 0px); height: var(--app-h, 100dvh);
   padding-bottom: 0;
 }
-html.kb-open .threadview { top: var(--app-top, 0px); bottom: auto; height: var(--app-h, 100dvh); }
 .threadview .bar { position: static; }
 .thread { overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
 /* With the keyboard up there's no home indicator to clear. */
