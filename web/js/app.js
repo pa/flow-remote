@@ -323,7 +323,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v47";
+const BUILD = "v48";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -1311,8 +1311,11 @@ function chatComposer(p, task, session, canSend) {
     input.value = "";
     grow();
     input.focus(); // keep the keyboard up, as Messages does
-    await send(p, task, body, state.replyTo?.id);
+    // Take the reply target before sending: a second message sent while
+    // the first is still going out must not answer the same message.
+    const replyTo = state.replyTo?.id;
     state.replyTo = null;
+    await send(p, task, body, replyTo);
   };
   return h("form", { class: "composer", onsubmit },
     h("div", { class: "field" },
