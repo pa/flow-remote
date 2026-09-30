@@ -27,8 +27,10 @@ case $(uname -m) in
 esac
 [ "$os" = darwin ] || die "flow-remote runs on macOS for now (this is $os)"
 
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+tmp=$(mktemp -d) || die "can't make a temporary folder"
+# ${tmp:?} refuses to run with an empty path, so the cleanup can only ever
+# remove the folder mktemp made.
+trap 'rm -rf -- "${tmp:?}"' EXIT
 
 if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
   tag=${WANT:-$(gh release view -R "$REPO" --json tagName -q .tagName)} || die "no release found"

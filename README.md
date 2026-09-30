@@ -45,6 +45,14 @@ service, which aren't done yet.
 curl -fsSL https://raw.githubusercontent.com/pa/flow-remote/main/install.sh | sh
 ```
 
+To read the script before running it:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/pa/flow-remote/main/install.sh
+less install.sh      # it downloads a release, checks its checksum, and copies one file
+sh install.sh
+```
+
 The script downloads the latest release for your Mac's chip, checks it
 against the release's `checksums.txt`, and installs `flow-remote` to
 `~/.local/bin`. Set `FLOW_REMOTE_INSTALL_DIR` for somewhere else, or

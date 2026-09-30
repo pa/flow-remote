@@ -1071,105 +1071,156 @@ async function openThread(task) {
   go("thread", { task, replyTo: pending ? { id: pending.flow_id, body: pending.body } : null, tsearch: false, tquery: "" });
 }
 
+// threadScreen is one chat: its messages, and the field to send more.
 function threadScreen(p) {
   const task = state.task;
   const session = (state.sessions[p.mac_id] || []).find((s) => s.slug === task);
   const items = itemsCache.filter((it) => it.mac === p.mac_id && it.task === task).sort((a, b) => a.ts - b.ts);
-  const canSend = Boolean(session?.can_send);
-
-  // Messages from one side within a few minutes form a run: tight
-  // spacing, and a tail only on the last one. A gap of an hour or more
-  // gets a divider with the time.
-  const RUN_MS = 5 * 60_000;
-  const GAP_MS = 60 * 60_000;
-  const sameRun = (a, b) => a && b && a.dir === b.dir && Math.abs(b.ts - a.ts) < RUN_MS;
   // Your delivered messages without an answer are still in the session's
   // queue, as far as anyone can tell: flow doesn't say when a session reads
   // its inbox (Facets-cloud/flow#100), but an answer means it did.
   const answered = answeredTest(items);
-  const waiting = items.filter((it) => it.dir === "out" && it.state === "delivered" && !answered(it));
-
-  // Search within this chat.
   const hits = state.tsearch ? findInChat(items, state.tquery) : [];
-  const current = hits[Math.min(Math.max(state.thit, 0), hits.length - 1)];
-  const text = (it) => state.tsearch && state.tquery.trim()
-    ? segments(it.body, state.tquery).map((s) => (s.hit ? h("mark", { class: it === current ? "hit now" : "hit" }, s.text) : s.text))
-    : it.body;
+  const chat = {
+    p, task, items, answered,
+    canSend: Boolean(session?.can_send),
+    waiting: items.filter((it) => it.dir === "out" && it.state === "delivered" && !answered(it)),
+    byFlow: new Map(items.filter((it) => it.flow_id).map((it) => [it.flow_id, it])),
+    current: hits[Math.min(Math.max(state.thit, 0), hits.length - 1)],
+  };
+  const header = chatHeader(p, task, session, hits, chat.current);
+  return h("main", { class: "threadview" },
+    header,
+    h("div", { class: "thread", onscroll: trackPin },
+      items.length ? items.map((it, i) => chatBubble(chat, it, i)) : h("p", { class: "muted pad" }, "No messages yet.")),
+    // render() keeps this slot's element across renders while its markup
+    // is unchanged, so the field keeps focus and the keyboard stays up.
+    h("div", { class: "composer-slot" }, chatComposer(p, task, session, chat.canSend)));
+}
 
-  // A message that answers another opens with a quote of it, WhatsApp
-  // style: who said it and the start of what they said. Tap to go there.
-  const byFlow = new Map(items.filter((it) => it.flow_id).map((it) => [it.flow_id, it]));
-  const quote = (it) => {
-    const target = it.reply_to && byFlow.get(it.reply_to);
-    if (!target) return null;
-    return h("button", {
-      class: "rq", type: "button", "aria-label": "Show the message this answers",
-      onclick: (e) => { e.stopPropagation(); showMessage(target.id); },
-    }, h("span", {}, h("b", {}, target.dir === "out" ? "You" : task), h("i", {}, target.body)));
-  };
-  // Tap one of the session's messages, or swipe it, to answer that one.
-  const replyTo = (it) => () => {
-    state.replyTo = { id: it.flow_id, body: it.body };
-    render();
-    root.querySelector(".composer textarea")?.focus();
-  };
-  // Ticks, as in WhatsApp, for what we know: ✓ reached the computer, grey
-  // ✓✓ in the session's inbox, teal ✓✓ answered. A clock while it's still
-  // on its way; ! if it didn't make it.
-  const ticks = (it) => {
-    const bad = it.state === "refused" || it.state === "failed" || it.state === "stale";
-    if (bad) return h("span", { class: "ticks bad", title: it.state }, "!");
-    if (it.state === "sending" || it.state === "queued") return h("span", { class: "ticks wait", title: it.state }, "◷");
-    if (it.state === "sent") return h("span", { class: "ticks", title: "reached the computer" }, "✓");
-    return answered(it)
-      ? h("span", { class: "ticks read", title: "answered" }, "✓✓")
-      : h("span", { class: "ticks", title: "in the session's inbox" }, "✓✓");
-  };
-  const bubble = (it, i) => {
-    const prev = items[i - 1], next = items[i + 1];
-    const last = !sameRun(it, next);
-    const run = `${sameRun(prev, it) ? " cont" : ""}${last ? "" : " more"}`;
-    const divider = !prev || it.ts - prev.ts >= GAP_MS ? h("div", { class: "divider" }, whenLabel(it.ts)) : null;
-    const q = quote(it);
-    const found = it === current ? " found" : "";
-    if (it.dir === "in") {
-      const tappable = canSend && it.flow_id && !it.broadcast;
-      const chosen = state.replyTo?.id === it.flow_id;
-      return [divider, h("div", { class: `msg in${run}${chosen ? " chosen" : ""}${found}`, "data-id": it.id },
-        h("div", { class: `bubble them${q ? " hasq" : ""}${tappable ? " tappable" : ""}`, onclick: tappable ? replyTo(it) : null, title: tappable ? "Tap or swipe to reply" : null },
-          q,
-          h("span", { class: "body" }, it.urgent ? h("span", { class: "chip urgent" }, "urgent") : null, text(it),
-            h("span", { class: "stamp" }, clock(it.ts), it.broadcast ? " · all" : null))))];
-    }
-    const bad = it.state === "refused" || it.state === "failed" || it.state === "stale";
-    const lastWaiting = waiting.length && it === waiting[waiting.length - 1];
-    const note = bad ? `${{ refused: "refused", failed: "failed", stale: "not delivered" }[it.state]}${it.reason ? ` · ${it.reason}` : ""}`
-      : it.state === "queued" ? "waiting for the computer to be reachable"
-      : it.state === "resent" ? "sent again below"
-      : lastWaiting ? (waiting.length > 1 ? `${waiting.length} waiting in the session's inbox` : "waiting in the session's inbox")
-      : "";
-    return [divider, h("div", { class: `msg out${run}${lastWaiting ? " queued" : ""}${found}`, "data-id": it.id },
-      h("div", { class: `bubble me${q ? " hasq" : ""}` },
-        q,
-        h("span", { class: "body" }, text(it), h("span", { class: "stamp" }, clock(it.ts), " ", ticks(it)))),
-      note ? h("span", { class: `note${bad ? " bad" : ""}` }, note) : null,
-      // The relay won't act on a message that waited too long in the
-      // mailbox; sending it again is a deliberate, fresh decision.
-      it.state === "stale" && canSend ? h("button", {
-        class: "inline", onclick: async () => {
-          it.state = "resent";
-          await db.putItem(it);
-          await send(p, task, it.body, it.reply_to);
-        },
-      }, "Send again") : null)];
-  };
+// Messages from one side within a few minutes form a run: tight spacing,
+// and a tail only on the last one. A gap of an hour or more gets a divider.
+const RUN_MS = 5 * 60_000;
+const GAP_MS = 60 * 60_000;
+const sameRun = (a, b) => a && b && a.dir === b.dir && Math.abs(b.ts - a.ts) < RUN_MS;
+const failed = (it) => it.state === "refused" || it.state === "failed" || it.state === "stale";
 
-  // One rounded panel with the send button inside it, like Messages: the
-  // round up-arrow appears only once there's something to send, and the
-  // field grows with the text up to a few lines. A reply's quote sits at
-  // the top of the same panel.
+// chatBubble draws one message of a chat, with the divider above it if
+// it starts a new stretch of time.
+function chatBubble(chat, it, i) {
+  const prev = chat.items[i - 1], next = chat.items[i + 1];
+  const run = `${sameRun(prev, it) ? " cont" : ""}${sameRun(it, next) ? " more" : ""}`;
+  const divider = !prev || it.ts - prev.ts >= GAP_MS ? h("div", { class: "divider" }, whenLabel(it.ts)) : null;
+  const q = replyQuote(chat, it);
+  const found = it === chat.current ? " found" : "";
+  const body = (...tail) => h("span", { class: "body" }, ...tail);
+  if (it.dir === "in") {
+    const tappable = chat.canSend && it.flow_id && !it.broadcast;
+    const chosen = state.replyTo?.id === it.flow_id ? " chosen" : "";
+    return [divider, h("div", { class: `msg in${run}${chosen}${found}`, "data-id": it.id },
+      h("div", {
+        class: `bubble them${q ? " hasq" : ""}${tappable ? " tappable" : ""}`,
+        onclick: tappable ? () => replyTo(it) : null, title: tappable ? "Tap or swipe to reply" : null,
+      },
+      q,
+      body(it.urgent ? h("span", { class: "chip urgent" }, "urgent") : null, searchMarks(it, chat.current),
+        h("span", { class: "stamp" }, clock(it.ts), it.broadcast ? " · all" : null))))];
+  }
+  const note = outNote(it, chat.waiting);
+  return [divider, h("div", { class: `msg out${run}${note.queued ? " queued" : ""}${found}`, "data-id": it.id },
+    h("div", { class: `bubble me${q ? " hasq" : ""}` },
+      q,
+      body(searchMarks(it, chat.current), h("span", { class: "stamp" }, clock(it.ts), " ", ticks(it, chat.answered)))),
+    note.text ? h("span", { class: `note${failed(it) ? " bad" : ""}` }, note.text) : null,
+    // The relay won't act on a message that waited too long in the
+    // mailbox; sending it again is a deliberate, fresh decision.
+    it.state === "stale" && chat.canSend ? h("button", {
+      class: "inline", onclick: async () => {
+        it.state = "resent";
+        await db.putItem(it);
+        await send(chat.p, chat.task, it.body, it.reply_to);
+      },
+    }, "Send again") : null)];
+}
+
+// replyQuote is the quote a reply opens with, WhatsApp style: who said the
+// message it answers and the start of it. Tap it to go there.
+function replyQuote(chat, it) {
+  const target = it.reply_to && chat.byFlow.get(it.reply_to);
+  if (!target) return null;
+  return h("button", {
+    class: "rq", type: "button", "aria-label": "Show the message this answers",
+    onclick: (e) => { e.stopPropagation(); showMessage(target.id); },
+  }, h("span", {}, h("b", {}, target.dir === "out" ? "You" : chat.task), h("i", {}, target.body)));
+}
+
+// replyTo makes the next message an answer to it, after a tap or a swipe.
+function replyTo(it) {
+  state.replyTo = { id: it.flow_id, body: it.body };
+  render();
+  root.querySelector(".composer textarea")?.focus();
+}
+
+// searchMarks is a message's text with the chat search's matches marked.
+function searchMarks(it, current) {
+  if (!state.tsearch || !state.tquery.trim()) return it.body;
+  return segments(it.body, state.tquery).map((s) =>
+    s.hit ? h("mark", { class: it === current ? "hit now" : "hit" }, s.text) : s.text);
+}
+
+// ticks, as in WhatsApp, for what we know: ✓ reached the computer, grey ✓✓
+// in the session's inbox, teal ✓✓ answered. A clock while it's still on its
+// way; ! if it didn't make it.
+function ticks(it, answered) {
+  if (failed(it)) return h("span", { class: "ticks bad", title: it.state }, "!");
+  if (it.state === "sending" || it.state === "queued") return h("span", { class: "ticks wait", title: it.state }, "◷");
+  if (it.state === "sent") return h("span", { class: "ticks", title: "reached the computer" }, "✓");
+  return answered(it)
+    ? h("span", { class: "ticks read", title: "answered" }, "✓✓")
+    : h("span", { class: "ticks", title: "in the session's inbox" }, "✓✓");
+}
+
+// outNote is the line under one of your messages, when it needs one: why it
+// failed, that it's waiting for the computer, or how many wait in the queue
+// (on the last of them).
+function outNote(it, waiting) {
+  if (failed(it)) {
+    const what = { refused: "refused", failed: "failed", stale: "not delivered" }[it.state];
+    return { text: it.reason ? `${what} · ${it.reason}` : what };
+  }
+  if (it.state === "queued") return { text: "waiting for the computer to be reachable" };
+  if (it.state === "resent") return { text: "sent again below" };
+  if (waiting.length && it === waiting[waiting.length - 1]) {
+    return { queued: true, text: waiting.length > 1 ? `${waiting.length} waiting in the session's inbox` : "waiting in the session's inbox" };
+  }
+  return {};
+}
+
+// chatHeader is a chat's bar: back, the session, where it runs, and the
+// search button, with the search row under it while it's open.
+function chatHeader(p, task, session, hits, current) {
   const offline = macOffline(p);
-  const input = h("textarea", { rows: "1", placeholder: canSend ? (offline ? "The computer is offline; this waits until it's back" : "Message") : "", maxlength: "4000", "aria-label": "Message", enterkeyhint: "enter" });
+  const header = bar(task, {
+    back: goBack, action: chatSearchButton(),
+    backCount: itemsCache.filter((it) => it.dir === "in" && !it.read && !(it.mac === p.mac_id && it.task === task)).length,
+    sub: h("span", { class: offline ? "status warn" : session ? "status ok" : "status" },
+      [macLabel(p), offline ? "offline" : session ? "live" : "not running", session?.project].filter(Boolean).join(" · ")),
+  });
+  if (state.tsearch) header.append(chatSearchRow(hits.length, hits.indexOf(current)));
+  return header;
+}
+
+// chatComposer is one rounded panel with the send button inside it, like
+// Messages: the round up-arrow appears only once there's something to send,
+// the field grows with the text up to a few lines, and a reply's quote sits
+// at the top of the same panel.
+function chatComposer(p, task, session, canSend) {
+  if (!canSend) {
+    return h("p", { class: "muted pad" }, session
+      ? "Read only: this computer's flow-remote is too old to take messages for it."
+      : "This session isn't running on the computer.");
+  }
+  const input = h("textarea", { rows: "1", placeholder: macOffline(p) ? "The computer is offline; this waits until it's back" : "Message", maxlength: "4000", "aria-label": "Message", enterkeyhint: "enter" });
   const sendBtn = h("button", { class: "send", type: "submit", "aria-label": "Send", hidden: true },
     svgIcon("M12 19V5M5 12l7-7 7 7"));
   const grow = () => {
@@ -1185,44 +1236,23 @@ function threadScreen(p) {
     }
   });
   requestAnimationFrame(grow); // a restored draft needs sizing too
-  const composer = canSend
-    ? h("form", {
-      class: "composer",
-      onsubmit: async (ev) => {
-        ev.preventDefault();
-        const body = input.value.trim();
-        if (!body) return;
-        input.value = "";
-        grow();
-        input.focus(); // keep the keyboard up, as Messages does
-        await send(p, task, body, state.replyTo?.id);
-        state.replyTo = null;
-      },
-    },
+  const onsubmit = async (ev) => {
+    ev.preventDefault();
+    const body = input.value.trim();
+    if (!body) return;
+    input.value = "";
+    grow();
+    input.focus(); // keep the keyboard up, as Messages does
+    await send(p, task, body, state.replyTo?.id);
+    state.replyTo = null;
+  };
+  return h("form", { class: "composer", onsubmit },
     h("div", { class: "field" },
       state.replyTo ? h("div", { class: "replying" },
         h("div", {}, h("b", {}, task), h("span", {}, state.replyTo.body)),
         h("button", { type: "button", "aria-label": "Don't reply to this message", onclick: () => go("thread", { replyTo: null }) }, "✕")) : null,
-      h("div", { class: "pill" }, input, sendBtn)))
-    : h("p", { class: "muted pad" }, session
-      ? "Read only: this computer's flow-remote is too old to take messages for it."
-      : "This session isn't running on the computer.");
-
-  const header = bar(task, {
-    back: goBack, action: chatSearchButton(),
-    backCount: itemsCache.filter((it) => it.dir === "in" && !it.read && !(it.mac === p.mac_id && it.task === task)).length,
-    sub: h("span", { class: offline ? "status warn" : session ? "status ok" : "status" }, [macLabel(p), offline ? "offline" : session ? "live" : "not running", session?.project].filter(Boolean).join(" · ")),
-  });
-  if (state.tsearch) header.append(chatSearchRow(hits.length, hits.indexOf(current)));
-
-  return h("main", { class: "threadview" },
-    header,
-    h("div", { class: "thread", onscroll: trackPin }, items.length ? items.map(bubble) : h("p", { class: "muted pad" }, "No messages yet.")),
-    // render() keeps this slot's element across renders while its markup
-    // is unchanged, so the field keeps focus and the keyboard stays up.
-    h("div", { class: "composer-slot" }, composer));
+      h("div", { class: "pill" }, input, sendBtn)));
 }
-
 // showMessage scrolls a thread to one message and lights it up briefly.
 function showMessage(id) {
   const el = root.querySelector(`[data-id="${CSS.escape(id)}"]`);
@@ -1234,6 +1264,7 @@ function showMessage(id) {
   setTimeout(() => el.classList.remove("flash"), 1200);
 }
 
+// chatSearchButton opens and closes the search row in a chat's header.
 function chatSearchButton() {
   return h("button", {
     class: `icon-btn${state.tsearch ? " on" : ""}`, "aria-label": "Search this chat",
@@ -1279,6 +1310,7 @@ function chatSearchRow(count, at) {
     h("button", { class: "clear", type: "button", "aria-label": "Close search", onclick: close }, "✕"));
 }
 
+// scrollToHit brings the current search match into view.
 function scrollToHit() {
   const el = root.querySelector(".msg.found");
   if (el) el.scrollIntoView({ block: "center" });
