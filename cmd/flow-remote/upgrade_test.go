@@ -43,6 +43,9 @@ func fakeGitHub(t *testing.T, bin []byte, tamper bool) {
 
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			t.Errorf("%s sent credentials; downloads must be anonymous", r.URL.Path)
+		}
 		switch r.URL.Path {
 		case "/latest":
 			json.NewEncoder(w).Encode(release{Tag: tag, Assets: []asset{
@@ -60,7 +63,7 @@ func fakeGitHub(t *testing.T, bin []byte, tamper bool) {
 	old := releasesAPI
 	releasesAPI = srv.URL
 	t.Cleanup(func() { releasesAPI = old })
-	t.Setenv("GH_TOKEN", "test") // don't ask the real gh
+	t.Setenv("GH_TOKEN", "must-not-be-sent")
 }
 
 func TestUpgradeReplacesTheBinary(t *testing.T) {

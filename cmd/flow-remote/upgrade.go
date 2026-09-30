@@ -36,22 +36,8 @@ type asset struct {
 	URL  string `json:"url"` // the API URL; with Accept: octet-stream it serves the file
 }
 
-// githubToken is for a private repository: GH_TOKEN or GITHUB_TOKEN, else
-// the GitHub CLI's login. A public repository needs none.
-func githubToken() string {
-	for _, k := range []string{"GH_TOKEN", "GITHUB_TOKEN"} {
-		if v := os.Getenv(k); v != "" {
-			return v
-		}
-	}
-	if gh, err := exec.LookPath("gh"); err == nil {
-		if out, err := exec.Command(gh, "auth", "token").Output(); err == nil {
-			return strings.TrimSpace(string(out))
-		}
-	}
-	return ""
-}
-
+// githubGet downloads url from GitHub without credentials: the repository
+// is public, so upgrading never uses your GitHub login.
 func githubGet(ctx context.Context, url, accept string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -59,11 +45,6 @@ func githubGet(ctx context.Context, url, accept string) ([]byte, error) {
 	}
 	req.Header.Set("Accept", accept)
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	if tok := githubToken(); tok != "" {
-		// Go drops this header when GitHub redirects the download to its
-		// storage host, so the token only goes to GitHub.
-		req.Header.Set("Authorization", "Bearer "+tok)
-	}
 	res, err := (&http.Client{Timeout: 5 * time.Minute}).Do(req)
 	if err != nil {
 		return nil, err
@@ -73,13 +54,16 @@ func githubGet(ctx context.Context, url, accept string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if res.StatusCode == http.StatusNotFound {
-		return nil, errors.New("no release found (a private repository needs `gh auth login` or GH_TOKEN)")
+	switch res.StatusCode {
+	case http.StatusOK:
+		return body, nil
+	case http.StatusNotFound:
+		return nil, errors.New("no release found")
+	case http.StatusForbidden, http.StatusTooManyRequests:
+		// GitHub allows 60 unauthenticated API requests an hour per address.
+		return nil, errors.New("GitHub is rate-limiting this address; try again in an hour")
 	}
-	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitHub answered %s", res.Status)
-	}
-	return body, nil
+	return nil, fmt.Errorf("GitHub answered %s", res.Status)
 }
 
 // checksumFor finds name's SHA-256 in a sha256sum-style checksums.txt.
