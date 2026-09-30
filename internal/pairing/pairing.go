@@ -99,45 +99,66 @@ func Accept(o Offer, mac *identity.Mac, env *envelope.Envelope, now time.Time) (
 	if now.UnixMilli() > o.Expires {
 		return identity.Device{}, ErrExpired
 	}
-	if env.To != mac.ID || env.V != envelope.Version {
-		return identity.Device{}, ErrMismatch
-	}
-	pt, err := envelope.Open(env, mac.Box)
+	en, err := openEnrollment(o, mac, env)
 	if err != nil {
 		return identity.Device{}, err
 	}
-	var en Enrollment
-	if err := json.Unmarshal(pt, &en); err != nil {
-		return identity.Device{}, fmt.Errorf("pairing: %w", err)
-	}
-	if en.Kind != "enroll" || en.PairID != o.PairID || env.From != en.DeviceID {
-		return identity.Device{}, ErrMismatch
-	}
-	secret, err := envelope.Decode(o.Secret)
-	if err != nil {
+	if err := checkEnrollment(o, env, en); err != nil {
 		return identity.Device{}, err
-	}
-	got, err := envelope.Decode(en.MAC)
-	if err != nil || !hmac.Equal(got, computeMAC(secret, en)) {
-		return identity.Device{}, ErrBadMAC
-	}
-	signPub, err := envelope.ParseSignPub(en.SignPub)
-	if err != nil {
-		return identity.Device{}, err
-	}
-	if err := envelope.Verify(env, signPub); err != nil {
-		return identity.Device{}, err
-	}
-	if _, err := envelope.ParseBoxPub(en.BoxPub); err != nil {
-		return identity.Device{}, fmt.Errorf("device box key: %w", err)
-	}
-	if !deviceID.MatchString(en.DeviceID) {
-		return identity.Device{}, fmt.Errorf("pairing: bad device id %q", en.DeviceID)
 	}
 	return identity.Device{
 		ID: en.DeviceID, Name: cleanName(en.Name),
 		SignPub: en.SignPub, BoxPub: en.BoxPub, EnrolledAt: now,
 	}, nil
+}
+
+// openEnrollment decrypts env and returns the enrollment inside, if it's
+// addressed to mac, for this offer, from the device it names.
+func openEnrollment(o Offer, mac *identity.Mac, env *envelope.Envelope) (Enrollment, error) {
+	var en Enrollment
+	if env.To != mac.ID || env.V != envelope.Version {
+		return en, ErrMismatch
+	}
+	pt, err := envelope.Open(env, mac.Box)
+	if err != nil {
+		return en, err
+	}
+	if err := json.Unmarshal(pt, &en); err != nil {
+		return en, fmt.Errorf("pairing: %w", err)
+	}
+	if en.Kind != "enroll" || en.PairID != o.PairID || env.From != en.DeviceID {
+		return en, ErrMismatch
+	}
+	return en, nil
+}
+
+// checkEnrollment proves the enrollment came from whoever scanned the
+// offer's QR code (its MAC uses the offer's secret), that the device holds
+// the signing key it sent (it signed env), and that its keys and id are
+// well formed.
+func checkEnrollment(o Offer, env *envelope.Envelope, en Enrollment) error {
+	secret, err := envelope.Decode(o.Secret)
+	if err != nil {
+		return err
+	}
+	got, err := envelope.Decode(en.MAC)
+	if err != nil || !hmac.Equal(got, computeMAC(secret, en)) {
+		return ErrBadMAC
+	}
+	signPub, err := envelope.ParseSignPub(en.SignPub)
+	if err != nil {
+		return err
+	}
+	if err := envelope.Verify(env, signPub); err != nil {
+		return err
+	}
+	if _, err := envelope.ParseBoxPub(en.BoxPub); err != nil {
+		return fmt.Errorf("device box key: %w", err)
+	}
+	if !deviceID.MatchString(en.DeviceID) {
+		return fmt.Errorf("pairing: bad device id %q", en.DeviceID)
+	}
+	return nil
 }
 
 // cleanName keeps a device name safe to print in a terminal.

@@ -41,8 +41,10 @@ type Msg struct {
 	Reason string `json:"reason,omitempty"`
 	FlowID string `json:"flow_id,omitempty"`
 
-	// sessions
+	// sessions. Update is a newer flow-remote release, if the computer's
+	// last check found one, so the phone can say to upgrade.
 	Sessions []Session `json:"sessions,omitempty"`
+	Update   string    `json:"update,omitempty"`
 
 	// mail
 	Mail *Mail `json:"mail,omitempty"`

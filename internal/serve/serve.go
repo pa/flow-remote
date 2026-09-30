@@ -67,40 +67,15 @@ func NotRunning(err error) bool {
 	return errors.As(err, &op) && op.Op == "dial"
 }
 
+// Run serves the mailbox and the app until ctx ends or a server fails: the
+// app and the phone API through o.Tunnel, everything on the local socket,
+// and the relay alongside, woken whenever mail for this computer arrives.
 func Run(ctx context.Context, o Options) error {
-	if err := os.MkdirAll(o.Home, 0o700); err != nil {
-		return err
-	}
-	db, err := mailbox.OpenBolt(filepath.Join(o.Home, "mailbox.db"), time.Second)
+	db, err := openStore(ctx, o)
 	if err != nil {
-		return fmt.Errorf("opening the mailbox database (is flow-remote already running?): %w", err)
+		return err
 	}
 	defer db.Close()
-
-	// This computer is the only tenant, registered directly.
-	err = db.RegisterMac(ctx, mailbox.Mac{ID: o.Mac.ID, SignPub: o.Mac.SignPub(), Created: time.Now()})
-	if errors.Is(err, mailbox.ErrConflict) {
-		return errors.New("mailbox.db belongs to a different identity for this computer; move it aside to start fresh")
-	}
-	if err != nil && !errors.Is(err, mailbox.ErrExists) {
-		return err
-	}
-	// The Keychain's device list is the source of truth; bring the store
-	// in line before loading keys, in case an enrollment or revocation
-	// happened while this wasn't running.
-	for _, d := range o.Relay.Devices.List() {
-		if d.Revoked() {
-			err = db.RevokeDevice(ctx, o.Mac.ID, d.ID)
-			if errors.Is(err, mailbox.ErrNotFound) {
-				err = nil
-			}
-		} else {
-			err = db.PutDevice(ctx, o.Mac.ID, d.ID, d.SignPub)
-		}
-		if err != nil && o.Log != nil {
-			o.Log.Warn("device sync", "device", d.ID, "err", err)
-		}
-	}
 
 	wake := make(chan struct{}, 1)
 	srv := &mailbox.Server{
@@ -118,17 +93,11 @@ func Run(ctx context.Context, o Options) error {
 		return err
 	}
 
-	sock := SocketPath(o.Home)
-	os.Remove(sock) // left by a crash; the database lock says no other serve is running
-	sl, err := net.Listen("unix", sock)
+	sl, err := listenSocket(SocketPath(o.Home))
 	if err != nil {
 		return err
 	}
-	if err := os.Chmod(sock, 0o600); err != nil {
-		sl.Close()
-		return err
-	}
-	defer os.Remove(sock)
+	defer os.Remove(SocketPath(o.Home))
 	pl, publicURL, err := o.Tunnel.Listen(ctx)
 	if err != nil {
 		sl.Close()
@@ -162,6 +131,65 @@ func Run(ctx context.Context, o Options) error {
 	public.Shutdown(sctx)
 	local.Shutdown(sctx)
 	return err
+}
+
+// openStore opens this computer's mailbox database and brings it in line
+// with the Keychain. Its lock also means only one serve runs per home.
+func openStore(ctx context.Context, o Options) (*mailbox.Bolt, error) {
+	if err := os.MkdirAll(o.Home, 0o700); err != nil {
+		return nil, err
+	}
+	db, err := mailbox.OpenBolt(filepath.Join(o.Home, "mailbox.db"), time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("opening the mailbox database (is flow-remote already running?): %w", err)
+	}
+	// This computer is the only tenant, registered directly.
+	err = db.RegisterMac(ctx, mailbox.Mac{ID: o.Mac.ID, SignPub: o.Mac.SignPub(), Created: time.Now()})
+	if errors.Is(err, mailbox.ErrConflict) {
+		err = errors.New("mailbox.db belongs to a different identity for this computer; move it aside to start fresh")
+	}
+	if err != nil && !errors.Is(err, mailbox.ErrExists) {
+		db.Close()
+		return nil, err
+	}
+	syncDevices(ctx, db, o)
+	return db, nil
+}
+
+// syncDevices makes the store's phones match the Keychain's device list,
+// the source of truth, in case an enrollment or revocation happened while
+// this wasn't running. A phone that fails to sync is logged, not fatal.
+func syncDevices(ctx context.Context, db *mailbox.Bolt, o Options) {
+	for _, d := range o.Relay.Devices.List() {
+		var err error
+		if d.Revoked() {
+			err = db.RevokeDevice(ctx, o.Mac.ID, d.ID)
+			if errors.Is(err, mailbox.ErrNotFound) {
+				err = nil
+			}
+		} else {
+			err = db.PutDevice(ctx, o.Mac.ID, d.ID, d.SignPub)
+		}
+		if err != nil && o.Log != nil {
+			o.Log.Warn("device sync", "device", d.ID, "err", err)
+		}
+	}
+}
+
+// listenSocket listens on the unix socket at path, readable and writable
+// by this user only. Call it with the database lock held: a socket file
+// already there was left by a crash, not by another serve.
+func listenSocket(path string) (net.Listener, error) {
+	os.Remove(path)
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		l.Close()
+		return nil, err
+	}
+	return l, nil
 }
 
 // serverLog sends net/http's own messages to the log, minus handshakes a

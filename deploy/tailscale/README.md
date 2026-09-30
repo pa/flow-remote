@@ -154,6 +154,12 @@ flow-remote pair       # shows a QR code
 ## 3. Set up the phone
 
 1. Install the Tailscale app, sign in to the same tailnet, and turn it on.
+   Sign in as yourself. Don't use the auth key from step 1c, and don't add
+   `tag:flow-remote` to the phone. A tagged device stops counting as yours
+   (`autogroup:member`), so the grant no longer lets it in. The address
+   won't load, and the phone won't see the computer under **Machines** in
+   its app. If that happened, remove the phone in the admin console and
+   sign it in again with your account.
 2. On an iPhone, the first scan with the camera opens Safari. It shows how
    to add flow-remote to your Home Screen. Do that, open the app from the
    Home Screen, and scan again from inside it. An installed app keeps its

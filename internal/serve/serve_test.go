@@ -77,7 +77,7 @@ func newPhone(t *testing.T, base string, offer pairing.Offer) *phone {
 func (p *phone) seal(v any) *envelope.Envelope {
 	macBox, _ := envelope.ParseBoxPub(p.mac.MacBoxPub)
 	pt, _ := json.Marshal(v)
-	e, err := envelope.Seal(pt, p.sign, p.id, p.mac.MacID, macBox, time.Now().UnixMilli())
+	e, err := envelope.Seal(pt, p.sign, envelope.Route{From: p.id, To: p.mac.MacID}, macBox, time.Now().UnixMilli())
 	if err != nil {
 		p.t.Fatal(err)
 	}

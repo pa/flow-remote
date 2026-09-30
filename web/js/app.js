@@ -8,6 +8,7 @@
 // Every message body comes from a flow session or from the user, so the UI
 // is built with DOM nodes and textContent, never innerHTML.
 import * as api from "./api.js";
+import { segments, matches as findInChat } from "./highlight.js";
 import * as db from "./db.js";
 import { b64u, generateIdentity, exportPublic, fingerprint, seal, verify, open } from "./envelope.js";
 import { parseOffer, newDeviceId, enrollmentEnvelope } from "./pairing.js";
@@ -27,11 +28,15 @@ const state = {
   sessions: {}, // mac_id -> [session]
   macSeen: {}, // mac_id -> Date | null
   unreachable: {}, // mac_id -> true while that Mac doesn't answer at all
+  updates: {}, // mac_id -> a newer flow-remote release that Mac could install
   view: "sessions",
   task: null,
   offer: null,
   error: "",
   replyTo: null,
+  tsearch: false, // the search row in a chat is open
+  tquery: "",
+  thit: 0, // which match is current
   query: "", // sessions-screen search
   toast: null, // {mac, task, body}: a reply that just arrived elsewhere
 };
@@ -163,8 +168,9 @@ function ago(ms) {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
+// clock is a message's time the way chat apps show it: "8:21 PM" or "20:21".
 function clock(ms) {
-  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
 // whenLabel is a divider's time: "10:42", "Yesterday 10:42", "Mon 10:42",
@@ -317,7 +323,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v42";
+const BUILD = "v47";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -396,7 +402,9 @@ function updateAppBadge() {
   try {
     if (n > 0) navigator.setAppBadge?.(n)?.catch?.(() => {});
     else navigator.clearAppBadge?.()?.catch?.(() => {});
-  } catch {}
+  } catch {
+    // The badge is a nicety; a browser that refuses it changes nothing.
+  }
 }
 
 // What the last render put on screen, to skip renders that change nothing.
@@ -426,60 +434,71 @@ function render({ stickToBottom = false } = {}) {
   const composerKey = slot ? slot.outerHTML.replace(/ placeholder="[^"]*"/, "") : "";
   const oldMain = root.querySelector("main.threadview");
   if (sameView && slot && oldMain && composerKey === shownComposer) {
-    const nextTa = slot.querySelector("textarea"), liveTa = oldMain.querySelector(".composer-slot textarea");
-    if (nextTa && liveTa) liveTa.placeholder = nextTa.placeholder;
-    const list = oldMain.querySelector(".thread");
-    const atBottom = threadPinned;
-    const top = list.scrollTop;
-    const nextList = next.querySelector(".thread");
-    oldMain.replaceChild(next.querySelector("header"), oldMain.querySelector("header"));
-    oldMain.replaceChild(nextList, list);
-    nextList.scrollTop = stickToBottom || atBottom ? nextList.scrollHeight : top;
-    root.querySelector(".toast")?.remove();
-    if (toast) root.append(toast);
-    shownHTML = html;
-    updateAppBadge();
-    return;
+    patchThread(oldMain, next, stickToBottom);
+  } else {
+    shownComposer = composerKey;
+    swapScreen(next, sameView, stickToBottom);
+    shownView = view;
   }
-  shownComposer = composerKey;
+  root.querySelector(".toast")?.remove();
+  if (toast) root.append(toast);
+  shownHTML = html;
+  updateAppBadge();
+}
 
-  // Keep a half-typed message, and the search box, with their focus.
+// caret is where the cursor is in el, if el has focus.
+function caret(el) {
+  return el && document.activeElement === el ? { start: el.selectionStart, end: el.selectionEnd } : null;
+}
+
+// putCaret gives el focus with the cursor where caret() found it.
+function putCaret(el, at) {
+  if (!el || !at) return;
+  el.focus();
+  el.setSelectionRange(at.start, at.end);
+}
+
+// patchThread updates an open thread in place: the header and the
+// messages, but not the composer.
+function patchThread(oldMain, next, stickToBottom) {
+  const nextTa = next.querySelector(".composer-slot textarea"), liveTa = oldMain.querySelector(".composer-slot textarea");
+  if (nextTa && liveTa) liveTa.placeholder = nextTa.placeholder;
+  const list = oldMain.querySelector(".thread");
+  const top = list.scrollTop;
+  const nextList = next.querySelector(".thread");
+  // The chat's search field is in the header: keep typing in it.
+  const searching = caret(oldMain.querySelector("input.tsearch"));
+  oldMain.replaceChild(next.querySelector("header"), oldMain.querySelector("header"));
+  oldMain.replaceChild(nextList, list);
+  putCaret(oldMain.querySelector("input.tsearch"), searching);
+  nextList.scrollTop = stickToBottom || threadPinned ? nextList.scrollHeight : top;
+}
+
+// swapScreen replaces the whole screen, keeping a half-typed message, the
+// search box's focus, and where you'd scrolled to.
+function swapScreen(next, sameView, stickToBottom) {
   const ta = root.querySelector("textarea");
-  const draft = ta ? { value: ta.value, focused: document.activeElement === ta, start: ta.selectionStart, end: ta.selectionEnd } : null;
-  const sb = root.querySelector("input.search");
-  const searchFocus = sb && document.activeElement === sb ? { start: sb.selectionStart, end: sb.selectionEnd } : null;
-  // And where you'd scrolled to.
+  const draft = ta ? { value: ta.value, at: caret(ta) } : null;
+  const searchAt = caret(root.querySelector("input.search"));
   const scrollY = window.scrollY;
   const list = root.querySelector(".thread");
   const listTop = list ? list.scrollTop : 0;
   const atBottom = !list || threadPinned;
 
   root.replaceChildren(next);
-  if (toast) root.append(toast);
-  shownView = view;
-  shownHTML = html;
   document.documentElement.classList.toggle("in-thread", state.view === "thread");
-  updateAppBadge();
   fitViewport();
-  const nextSb = root.querySelector("input.search");
-  if (searchFocus && nextSb) {
-    nextSb.focus();
-    nextSb.setSelectionRange(searchFocus.start, searchFocus.end);
-  }
+  putCaret(root.querySelector("input.search"), searchAt);
   if (sameView) window.scrollTo(0, scrollY);
-  if (state.view === "thread") {
-    const nextList = root.querySelector(".thread");
-    // Follow new messages only if you were already at the newest one.
-    if (!sameView) threadPinned = true; // a thread opens at its newest message
-    if (nextList) nextList.scrollTop = !sameView || stickToBottom || atBottom ? nextList.scrollHeight : listTop;
-    const nextTa = root.querySelector("textarea");
-    if (draft && nextTa) {
-      nextTa.value = draft.value;
-      if (draft.focused) {
-        nextTa.focus();
-        nextTa.setSelectionRange(draft.start, draft.end);
-      }
-    }
+  if (state.view !== "thread") return;
+  const nextList = root.querySelector(".thread");
+  // Follow new messages only if you were already at the newest one.
+  if (!sameView) threadPinned = true; // a thread opens at its newest message
+  if (nextList) nextList.scrollTop = !sameView || stickToBottom || atBottom ? nextList.scrollHeight : listTop;
+  const nextTa = root.querySelector("textarea");
+  if (draft && nextTa) {
+    nextTa.value = draft.value;
+    putCaret(nextTa, draft.at);
   }
 }
 
@@ -522,9 +541,11 @@ function bar(title, { back, sub, backCount, action } = {}) {
 }
 
 // The gear in the top-right corner, so Settings is never below a long list.
+// It carries a dot when that computer has an update to install.
 function settingsButton(p) {
+  const update = state.updates[p.mac_id];
   return h("button", {
-    class: "icon-btn", "aria-label": "Settings",
+    class: `icon-btn${update ? " has-update" : ""}`, "aria-label": update ? `Settings, ${update} available` : "Settings",
     onclick: () => { sendSync(p); go("settings"); },
   }, svgIcon("M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"));
 }
@@ -902,142 +923,193 @@ function macSwitcher() {
   }));
 }
 
+// The main screen: this computer's sessions, grouped by what needs you,
+// or search results while there's a query.
 function sessionsScreen(p) {
+  const home = homeContext(p);
+  const q = state.query.trim();
+  return h("main", {},
+    bar(macLabel(p), { sub: macLine(p), action: settingsButton(p) }),
+    macSwitcher(),
+    homeSearchBar(),
+    h("div", { class: `list ${home.offline ? "dim" : ""}` }, q ? searchResults(home, q) : homeSections(home)));
+}
+
+// A message whose last attempt went wrong.
+const BAD = ["refused", "failed", "stale"];
+// How long the main screen keeps showing where your last message is.
+const WAIT_MS = 12 * 3600_000;
+
+// homeContext gathers what the main screen's rows need: this computer's
+// messages, its live sessions (phone-dispatch first, then the ones you
+// can message), the sessions that have only history, and helpers for
+// which of your messages are still unanswered.
+function homeContext(p) {
   const mine = itemsCache.filter((it) => it.mac === p.mac_id);
-  const tasksWithItems = new Set(mine.map((it) => it.task));
   const live = [...(state.sessions[p.mac_id] || [])].sort((a, b) =>
     (b.slug === "phone-dispatch") - (a.slug === "phone-dispatch") || (b.can_send - a.can_send));
   const liveSlugs = new Set(live.map((s) => s.slug));
-  const earlier = [...tasksWithItems].filter((t) => !liveSlugs.has(t)).sort();
-
-  // A dot says whether you can message the session; a word says why not.
-  const row = (slug, sub, chip, chipClass, marks = {}, where = "") => {
-    const n = unreadCount(p.mac_id, slug);
-    const o = awaiting(slug);
-    const busy = o && !BAD.includes(o.state) ? " busy" : "";
-    return h("button", { class: "row", onclick: () => openThread(slug) },
-      h("div", { class: "top" },
-        h("span", { class: `dot ${chipClass}${busy}`, title: chip, "aria-label": chip }),
-        h("span", { class: "slug" }, hl(slug, marks.slug)),
-        n ? h("span", { class: "badge" }, n) : null,
-        chipClass === "live" ? null : h("span", { class: "state" }, chip)),
-      sub ? h("span", { class: "sub" }, hl(sub, marks.sub)) : null,
-      where ? h("span", { class: "where" }, hl(where, marks.where)) : null,
-      o ? pendingLine(o) : null);
-  };
-  // Your latest message to a session, while no reply has come after it:
-  // the main screen shows where it is. flow can't say yet whether the
-  // session has read it, so "waiting for a reply" is as far as it goes.
-  const WAIT_MS = 12 * 3600_000;
-  const lastOut = {}, lastIn = {};
+  const earlier = [...new Set(mine.map((it) => it.task))].filter((t) => !liveSlugs.has(t)).sort();
+  const lastOut = {};
   for (const it of mine) {
-    const m = it.dir === "out" ? lastOut : lastIn;
-    if (!m[it.task] || it.ts > m[it.task].ts) m[it.task] = it;
+    if (it.dir === "out" && (!lastOut[it.task] || it.ts > lastOut[it.task].ts)) lastOut[it.task] = it;
   }
-  // How many of your delivered messages to slug haven't had their answer.
   const tests = new Map();
   const answeredIn = (slug) => {
     if (!tests.has(slug)) tests.set(slug, answeredTest(mine.filter((it) => it.task === slug)));
     return tests.get(slug);
   };
-  const waitingCount = (slug) =>
+  const home = { p, mine, live, earlier, lastOut, answeredIn, offline: macOffline(p) };
+  // How many of your delivered messages to slug haven't had their answer.
+  home.waitingCount = (slug) =>
     mine.filter((it) => it.task === slug && it.dir === "out" && it.state === "delivered" && !answeredIn(slug)(it)).length;
-  // The session's row shows where your messages are while any is unanswered.
-  const awaiting = (slug) => {
-    const o = lastOut[slug];
-    if (!o || o.state === "resent" || Date.now() - o.ts > WAIT_MS) return null;
-    if (o.state === "delivered" && waitingCount(slug) === 0) return null;
-    if (o.state !== "delivered" && answeredIn(slug)(o)) return null;
-    return o;
-  };
-  const BAD = ["refused", "failed", "stale"];
-  const pendingLine = (o) => {
-    const n = waitingCount(o.task);
-    return h("span", { class: `pending${BAD.includes(o.state) ? " bad" : ""}` }, {
-      sending: "Sending…", queued: "Waiting for the computer to be reachable", sent: "Sent, waiting for the computer",
-      delivered: n > 1 ? `${n} messages waiting in the session's inbox` : "In the session's inbox · waiting for a reply",
-    }[o.state] || "Not delivered · open to see why");
-  };
-  // group puts rows in one card under a heading; nothing if there are none.
-  const group = (title, rows, kind = "") => rows.length ? [
+  home.awaiting = (slug) => awaiting(home, slug);
+  return home;
+}
+
+// awaiting is your latest message to slug while it's unanswered, so the
+// session's row can say where it is. flow can't say yet whether the
+// session has read it, so "waiting for a reply" is as far as it goes.
+function awaiting(home, slug) {
+  const o = home.lastOut[slug];
+  if (!o || o.state === "resent" || Date.now() - o.ts > WAIT_MS) return null;
+  if (o.state === "delivered" && home.waitingCount(slug) === 0) return null;
+  if (o.state !== "delivered" && home.answeredIn(slug)(o)) return null;
+  return o;
+}
+
+// sessionRow is one session in the list. A dot says whether you can
+// message the session; a word says why not.
+function sessionRow(home, slug, { sub = "", chip, cls, marks = {}, where = "" }) {
+  const n = unreadCount(home.p.mac_id, slug);
+  const o = home.awaiting(slug);
+  const busy = o && !BAD.includes(o.state) ? " busy" : "";
+  return h("button", { class: "row", onclick: () => openThread(slug) },
+    h("div", { class: "top" },
+      h("span", { class: `dot ${cls}${busy}`, title: chip, "aria-label": chip }),
+      h("span", { class: "slug" }, hl(slug, marks.slug)),
+      n ? h("span", { class: "badge" }, n) : null,
+      cls === "live" ? null : h("span", { class: "state" }, chip)),
+    sub ? h("span", { class: "sub" }, hl(sub, marks.sub)) : null,
+    where ? h("span", { class: "where" }, hl(where, marks.where)) : null,
+    o ? pendingLine(home, o) : null);
+}
+
+// liveRow is sessionRow for a running session, with its details.
+function liveRow(home, s, marks) {
+  const [chip, cls] = home.offline ? ["offline", "off"] : s.can_send ? ["live", "live"] : ["read only", "ro"];
+  return sessionRow(home, s.slug, { sub: sessionSub(s), chip, cls, marks, where: whereOf(s) });
+}
+
+// A session that's no longer running, with only its history.
+function endedRow(home, slug, marks) {
+  return sessionRow(home, slug, { chip: "not running", cls: "off", marks });
+}
+
+// The line under a session's name: who it's waiting on, or its name.
+const sessionSub = (s) => s.waiting_on ? `waiting on ${s.waiting_on}` : s.name;
+
+// project · #tag #tag, the task's place in flow.
+const whereOf = (s) => [s.project, (s.tags || []).map((t) => "#" + t).join(" ")].filter(Boolean).join(" · ");
+
+// pendingLine says where your unanswered message to a session is.
+function pendingLine(home, o) {
+  const n = home.waitingCount(o.task);
+  return h("span", { class: `pending${BAD.includes(o.state) ? " bad" : ""}` }, {
+    sending: "Sending…", queued: "Waiting for the computer to be reachable", sent: "Sent, waiting for the computer",
+    delivered: n > 1 ? `${n} messages waiting in the session's inbox` : "In the session's inbox · waiting for a reply",
+  }[o.state] || "Not delivered · open to see why");
+}
+
+// group puts rows in one card under a heading; nothing if there are none.
+function group(title, rows, kind = "") {
+  return rows.length ? [
     title ? h("h2", { class: `section ${kind}` }, title) : null,
     h("div", { class: "group" }, rows),
   ] : null;
-  // project · #tag #tag, the task's place in flow.
-  const whereOf = (s) => [s.project, (s.tags || []).map((t) => "#" + t).join(" ")].filter(Boolean).join(" · ");
-  const offline = macOffline(p);
-  const liveRow = (s, marks) => row(s.slug, s.waiting_on ? `waiting on ${s.waiting_on}` : s.name,
-    offline ? "offline" : s.can_send ? "live" : "read only",
-    offline ? "off" : s.can_send ? "live" : "ro", marks, whereOf(s));
+}
 
+// homeSearchBar is the main search field, with a clear button while
+// there's a query.
+function homeSearchBar() {
   const searchBox = h("input", {
     class: "search", type: "search", placeholder: "Search sessions and messages", value: state.query,
     autocomplete: "off", autocapitalize: "off", spellcheck: "false", "aria-label": "Search",
   });
   searchBox.addEventListener("input", () => { state.query = searchBox.value; render(); });
+  const clearSearch = state.query ? h("button", {
+    class: "clear", type: "button", "aria-label": "Clear search",
+    onclick: () => { state.query = ""; render(); root.querySelector("input.search")?.focus(); },
+  }, "✕") : null;
+  return h("div", { class: "searchbar" }, searchBox, clearSearch);
+}
 
-  let body;
-  const q = state.query.trim();
-  if (q) {
-    // Sessions: live ones with their details, plus threads no longer running.
-    const pool = [
-      ...live.map((s) => ({ ...s, sub: s.waiting_on ? `waiting on ${s.waiting_on}` : s.name, where: whereOf(s), live: true })),
-      ...earlier.map((slug) => ({ slug, sub: "", live: false })),
-    ];
-    const hits = search(q, pool, { slug: 3, sub: 1.5, where: 1 });
-    const msgHits = search(q, mine, { body: 1 }).slice(0, 20);
-    body = [
-      group("Sessions", hits.map(({ item, field, positions }) => {
-        const marks = { [field]: positions };
-        return item.live ? liveRow(item, marks) : row(item.slug, "", "not running", "off", marks);
-      })),
-      group("Messages", msgHits.map(({ item, positions }) => {
-        const sn = snippet(item.body, positions);
-        return h("button", { class: "row", onclick: () => openThread(item.task) },
-          h("div", { class: "top" },
-            h("span", { class: "dot ro", "aria-hidden": "true" }),
-            h("span", { class: "slug" }, item.task),
-            h("span", { class: "state" }, item.dir === "in" ? "from session" : "you")),
-          h("span", { class: "sub wrap" }, hl(sn.text, sn.positions)));
-      })),
-      hits.length || msgHits.length ? null : h("p", { class: "muted pad" }, `Nothing matches "${q}".`),
-    ];
-  } else {
-    // Sessions with unread replies go first, newest reply on top, with
-    // a preview; the rest keep their usual order below.
-    const latestUnread = {};
-    for (const it of mine) {
-      if (it.dir === "in" && !it.read && (!latestUnread[it.task] || it.ts > latestUnread[it.task].ts)) latestUnread[it.task] = it;
-    }
-    const replied = Object.values(latestUnread).sort((a, b) => b.ts - a.ts);
-    const repliedSet = new Set(replied.map((it) => it.task));
-    const liveBySlug = new Map(live.map((s) => [s.slug, s]));
-    body = [
-      group("New replies", replied.map((it) => {
-        const s = liveBySlug.get(it.task);
-        const n = unreadCount(p.mac_id, it.task);
-        return h("button", { class: "row", onclick: () => openThread(it.task) },
-          h("div", { class: "top" },
-            h("span", { class: "dot new", "aria-hidden": "true" }),
-            h("span", { class: "slug" }, it.task),
-            h("span", { class: "badge" }, n),
-            h("span", { class: "meta" }, ago(it.ts))),
-          h("span", { class: "preview" }, it.body),
-          s ? (whereOf(s) ? h("span", { class: "where" }, whereOf(s)) : null) : h("span", { class: "sub" }, "not running"));
-      }), "new"),
-      live.length ? null : h("p", { class: "muted pad" }, "No live sessions reported yet."),
-      group("Waiting for a reply", live.filter((s) => !repliedSet.has(s.slug) && awaiting(s.slug)).map((s) => liveRow(s)), "wait"),
-      group(replied.length || live.some((s) => awaiting(s.slug)) ? "Sessions" : "",
-        live.filter((s) => !repliedSet.has(s.slug) && !awaiting(s.slug)).map((s) => liveRow(s))),
-      group("Not running", earlier.filter((t) => !repliedSet.has(t)).map((slug) => row(slug, "", "not running", "off"))),
-    ];
+// searchResults matches q against sessions (live ones with their details,
+// plus threads no longer running) and against messages.
+function searchResults(home, q) {
+  const pool = [
+    ...home.live.map((s) => ({ ...s, sub: sessionSub(s), where: whereOf(s), live: true })),
+    ...home.earlier.map((slug) => ({ slug, sub: "", live: false })),
+  ];
+  const hits = search(q, pool, { slug: 3, sub: 1.5, where: 1 });
+  const msgHits = search(q, home.mine, { body: 1 }).slice(0, 20);
+  return [
+    group("Sessions", hits.map(({ item, field, positions }) => {
+      const marks = { [field]: positions };
+      return item.live ? liveRow(home, item, marks) : endedRow(home, item.slug, marks);
+    })),
+    group("Messages", msgHits.map(({ item, positions }) => messageHit(item, positions))),
+    hits.length || msgHits.length ? null : h("p", { class: "muted pad" }, `Nothing matches "${q}".`),
+  ];
+}
+
+// messageHit is a message that matched the search, with the match shown.
+function messageHit(item, positions) {
+  const sn = snippet(item.body, positions);
+  return h("button", { class: "row", onclick: () => openThread(item.task) },
+    h("div", { class: "top" },
+      h("span", { class: "dot ro", "aria-hidden": "true" }),
+      h("span", { class: "slug" }, item.task),
+      h("span", { class: "state" }, item.dir === "in" ? "from session" : "you")),
+    h("span", { class: "sub wrap" }, hl(sn.text, sn.positions)));
+}
+
+// homeSections lists the sessions with no query: new replies first,
+// newest on top with a preview, then those waiting for a reply, then the
+// rest in their usual order, then the ones no longer running.
+function homeSections(home) {
+  const latestUnread = {};
+  for (const it of home.mine) {
+    if (it.dir === "in" && !it.read && (!latestUnread[it.task] || it.ts > latestUnread[it.task].ts)) latestUnread[it.task] = it;
   }
+  const replied = Object.values(latestUnread).sort((a, b) => b.ts - a.ts);
+  const repliedSet = new Set(replied.map((it) => it.task));
+  const liveBySlug = new Map(home.live.map((s) => [s.slug, s]));
+  const rest = home.live.filter((s) => !repliedSet.has(s.slug));
+  const waiting = rest.filter((s) => home.awaiting(s.slug));
+  return [
+    group("New replies", replied.map((it) => repliedRow(home, it, liveBySlug.get(it.task))), "new"),
+    home.live.length ? null : h("p", { class: "muted pad" }, "No live sessions reported yet."),
+    group("Waiting for a reply", waiting.map((s) => liveRow(home, s)), "wait"),
+    group(replied.length || home.live.some((s) => home.awaiting(s.slug)) ? "Sessions" : "",
+      rest.filter((s) => !home.awaiting(s.slug)).map((s) => liveRow(home, s))),
+    group("Not running", home.earlier.filter((t) => !repliedSet.has(t)).map((slug) => endedRow(home, slug))),
+  ];
+}
 
-  return h("main", {},
-    bar(macLabel(p), { sub: macLine(p), action: settingsButton(p) }),
-    macSwitcher(),
-    h("div", { class: "searchbar" }, searchBox),
-    h("div", { class: `list ${offline ? "dim" : ""}` }, body));
+// repliedRow is a session with unread replies, previewing the newest.
+// s is the live session, if it's still running.
+function repliedRow(home, it, s) {
+  const n = unreadCount(home.p.mac_id, it.task);
+  const where = s ? whereOf(s) : "";
+  return h("button", { class: "row", onclick: () => openThread(it.task) },
+    h("div", { class: "top" },
+      h("span", { class: "dot new", "aria-hidden": "true" }),
+      h("span", { class: "slug" }, it.task),
+      h("span", { class: "badge" }, n),
+      h("span", { class: "meta" }, ago(it.ts))),
+    h("span", { class: "preview" }, it.body),
+    s ? (where ? h("span", { class: "where" }, where) : null) : h("span", { class: "sub" }, "not running"));
 }
 
 async function openThread(task) {
@@ -1051,90 +1123,172 @@ async function openThread(task) {
   }
   itemsCache = await db.allItems();
   const pending = [...items].reverse().find((it) => it.dir === "in" && !it.replied && !it.broadcast);
-  go("thread", { task, replyTo: pending ? { id: pending.flow_id, body: pending.body } : null });
+  go("thread", { task, replyTo: pending ? { id: pending.flow_id, body: pending.body } : null, tsearch: false, tquery: "" });
 }
 
+// threadScreen is one chat: its messages, and the field to send more.
 function threadScreen(p) {
   const task = state.task;
   const session = (state.sessions[p.mac_id] || []).find((s) => s.slug === task);
   const items = itemsCache.filter((it) => it.mac === p.mac_id && it.task === task).sort((a, b) => a.ts - b.ts);
-  const canSend = Boolean(session?.can_send);
-
-  // Messages from one side within a few minutes form a run: tight
-  // spacing, and the time only under the last one. A gap of an hour or
-  // more gets a divider with the time.
-  const RUN_MS = 5 * 60_000;
-  const GAP_MS = 60 * 60_000;
-  const sameRun = (a, b) => a && b && a.dir === b.dir && Math.abs(b.ts - a.ts) < RUN_MS;
   // Your delivered messages without an answer are still in the session's
   // queue, as far as anyone can tell: flow doesn't say when a session reads
   // its inbox (Facets-cloud/flow#100), but an answer means it did.
   const answered = answeredTest(items);
-  const waiting = items.filter((it) => it.dir === "out" && it.state === "delivered" && !answered(it));
-  // A message that answers another shows a quote of it; tap to go there.
-  const byFlow = new Map(items.filter((it) => it.flow_id).map((it) => [it.flow_id, it]));
-  const quote = (it) => {
-    const target = it.reply_to && byFlow.get(it.reply_to);
-    if (!target) return null;
-    return h("button", {
-      class: "quote", type: "button", "aria-label": "Show the message this answers",
-      onclick: () => {
-        const el = root.querySelector(`[data-id="${CSS.escape(target.id)}"]`);
-        if (!el) return;
-        el.scrollIntoView({ behavior: "smooth", block: "center" });
-        el.classList.add("flash");
-        setTimeout(() => el.classList.remove("flash"), 1200);
-      },
-    }, "↩ ", target.body.length > 90 ? target.body.slice(0, 90) + "…" : target.body);
+  const hits = state.tsearch ? findInChat(items, state.tquery) : [];
+  const chat = {
+    p, task, items, answered,
+    canSend: Boolean(session?.can_send),
+    waiting: items.filter((it) => it.dir === "out" && it.state === "delivered" && !answered(it)),
+    byFlow: new Map(items.filter((it) => it.flow_id).map((it) => [it.flow_id, it])),
+    current: hits[Math.min(Math.max(state.thit, 0), hits.length - 1)],
   };
-  // Tap one of the session's messages to answer that one.
-  const replyTo = (it) => () => {
-    state.replyTo = { id: it.flow_id, body: it.body };
-    render();
-    root.querySelector(".composer textarea")?.focus();
-  };
-  const bubble = (it, i) => {
-    const prev = items[i - 1], next = items[i + 1];
-    const last = !sameRun(it, next);
-    const run = `${sameRun(prev, it) ? " cont" : ""}${last ? "" : " more"}`;
-    const divider = !prev || it.ts - prev.ts >= GAP_MS ? h("div", { class: "divider" }, whenLabel(it.ts)) : null;
-    if (it.dir === "in") {
-      const tappable = canSend && it.flow_id && !it.broadcast;
-      const chosen = state.replyTo?.id === it.flow_id;
-      return [divider, h("div", { class: `msg in${run}${chosen ? " chosen" : ""}`, "data-id": it.id },
-        quote(it),
-        h("div", { class: `bubble them${tappable ? " tappable" : ""}`, onclick: tappable ? replyTo(it) : null, title: tappable ? "Reply to this" : null },
-          it.urgent ? h("span", { class: "chip urgent" }, "urgent") : null, it.body),
-        last || it.broadcast ? h("span", { class: "meta" }, `${clock(it.ts)}${it.broadcast ? " · broadcast" : ""}`) : null)];
-    }
-    const place = waiting.indexOf(it);
-    const inQueue = place < 0 ? "delivered" : waiting.length > 1 ? `waiting in the session's inbox · ${place + 1} of ${waiting.length}` : "waiting in the session's inbox";
-    const label = { sending: "sending…", queued: "waiting for the computer to be reachable", sent: "sent, waiting for the computer", delivered: inQueue, refused: "refused", failed: "failed", stale: "not delivered", resent: "sent again below" }[it.state] || it.state;
-    const bad = it.state === "refused" || it.state === "failed" || it.state === "stale";
-    // Each message's own fate matters, so anything but "delivered" shows
-    // even mid-run.
-    const showMeta = last || it.state !== "delivered" || place >= 0;
-    return [divider, h("div", { class: `msg out${run}${place >= 0 ? " queued" : ""}`, "data-id": it.id },
-      quote(it),
-      h("div", { class: "bubble me" }, it.body),
-      showMeta ? h("span", { class: `meta ${bad ? "bad" : ""}` },
-        `${clock(it.ts)} · ${label}${it.reason ? ` · ${it.reason}` : ""}`) : null,
-      // The relay won't act on a message that waited too long in the
-      // mailbox; sending it again is a deliberate, fresh decision.
-      it.state === "stale" && canSend ? h("button", {
-        class: "inline", onclick: async () => {
-          it.state = "resent";
-          await db.putItem(it);
-          await send(p, task, it.body, it.reply_to);
-        },
-      }, "Send again") : null)];
-  };
+  const header = chatHeader(p, task, session, hits, chat.current);
+  return h("main", { class: "threadview" },
+    header,
+    h("div", { class: "thread", onscroll: trackPin },
+      items.length ? items.map((it, i) => chatBubble(chat, it, i)) : h("p", { class: "muted pad" }, "No messages yet.")),
+    // render() keeps this slot's element across renders while its markup
+    // is unchanged, so the field keeps focus and the keyboard stays up.
+    h("div", { class: "composer-slot" }, chatComposer(p, task, session, chat.canSend)));
+}
 
-  // One rounded field with the send button inside it, like Messages: the
-  // round up-arrow appears only once there's something to send, and the
-  // field grows with the text up to a few lines.
+// Messages from one side within a few minutes form a run: tight spacing,
+// and a tail only on the last one. A gap of an hour or more gets a divider.
+const RUN_MS = 5 * 60_000;
+const GAP_MS = 60 * 60_000;
+const sameRun = (a, b) => a && b && a.dir === b.dir && Math.abs(b.ts - a.ts) < RUN_MS;
+const failed = (it) => it.state === "refused" || it.state === "failed" || it.state === "stale";
+
+// chatBubble draws one message of a chat, with the divider above it if
+// it starts a new stretch of time.
+function chatBubble(chat, it, i) {
+  const prev = chat.items[i - 1], next = chat.items[i + 1];
+  const run = `${sameRun(prev, it) ? " cont" : ""}${sameRun(it, next) ? " more" : ""}${it === chat.current ? " found" : ""}`;
+  const divider = !prev || it.ts - prev.ts >= GAP_MS ? h("div", { class: "divider" }, whenLabel(it.ts)) : null;
+  const q = replyQuote(chat, it);
+  return [divider, it.dir === "in" ? inBubble(chat, it, run, q) : outBubble(chat, it, run, q)];
+}
+
+// inBubble is a message from the session. Tap or swipe it to reply.
+function inBubble(chat, it, run, q) {
+  const tappable = chat.canSend && it.flow_id && !it.broadcast;
+  const chosen = state.replyTo?.id === it.flow_id ? " chosen" : "";
+  return h("div", { class: `msg in${run}${chosen}`, "data-id": it.id },
+    h("div", {
+      class: `bubble them${q ? " hasq" : ""}${tappable ? " tappable" : ""}`,
+      onclick: tappable ? () => replyTo(it) : null, title: tappable ? "Tap or swipe to reply" : null,
+    },
+    q,
+    h("span", { class: "body" },
+      it.urgent ? h("span", { class: "chip urgent" }, "urgent") : null, searchMarks(it, chat.current),
+      h("span", { class: "stamp" }, clock(it.ts), it.broadcast ? " · all" : null))));
+}
+
+// outBubble is a message you sent, with its ticks and, under it, where it
+// is if that needs saying.
+function outBubble(chat, it, run, q) {
+  const note = outNote(it, chat.waiting);
+  return h("div", { class: `msg out${run}${note.queued ? " queued" : ""}`, "data-id": it.id },
+    h("div", { class: `bubble me${q ? " hasq" : ""}` },
+      q,
+      h("span", { class: "body" }, searchMarks(it, chat.current), h("span", { class: "stamp" }, clock(it.ts), " ", ticks(it, chat.answered)))),
+    note.text ? h("span", { class: `note${failed(it) ? " bad" : ""}` }, note.text) : null,
+    sendAgain(chat, it));
+}
+
+// sendAgain offers to resend a message that went stale. The relay won't
+// act on a message that waited too long in the mailbox; sending it again
+// is a deliberate, fresh decision.
+function sendAgain(chat, it) {
+  if (it.state !== "stale" || !chat.canSend) return null;
+  return h("button", {
+    class: "inline", onclick: async () => {
+      it.state = "resent";
+      await db.putItem(it);
+      await send(chat.p, chat.task, it.body, it.reply_to);
+    },
+  }, "Send again");
+}
+
+// replyQuote is the quote a reply opens with, WhatsApp style: who said the
+// message it answers and the start of it. Tap it to go there.
+function replyQuote(chat, it) {
+  const target = it.reply_to && chat.byFlow.get(it.reply_to);
+  if (!target) return null;
+  return h("button", {
+    class: "rq", type: "button", "aria-label": "Show the message this answers",
+    onclick: (e) => { e.stopPropagation(); showMessage(target.id); },
+  }, h("span", {}, h("b", {}, target.dir === "out" ? "You" : chat.task), h("i", {}, target.body)));
+}
+
+// replyTo makes the next message an answer to it, after a tap or a swipe.
+function replyTo(it) {
+  state.replyTo = { id: it.flow_id, body: it.body };
+  render();
+  root.querySelector(".composer textarea")?.focus();
+}
+
+// searchMarks is a message's text with the chat search's matches marked.
+function searchMarks(it, current) {
+  if (!state.tsearch || !state.tquery.trim()) return it.body;
+  return segments(it.body, state.tquery).map((s) =>
+    s.hit ? h("mark", { class: it === current ? "hit now" : "hit" }, s.text) : s.text);
+}
+
+// ticks, as in WhatsApp, for what we know: ✓ reached the computer, grey ✓✓
+// in the session's inbox, teal ✓✓ answered. A clock while it's still on its
+// way; ! if it didn't make it.
+function ticks(it, answered) {
+  if (failed(it)) return h("span", { class: "ticks bad", title: it.state }, "!");
+  if (it.state === "sending" || it.state === "queued") return h("span", { class: "ticks wait", title: it.state }, "◷");
+  if (it.state === "sent") return h("span", { class: "ticks", title: "reached the computer" }, "✓");
+  return answered(it)
+    ? h("span", { class: "ticks read", title: "answered" }, "✓✓")
+    : h("span", { class: "ticks", title: "in the session's inbox" }, "✓✓");
+}
+
+// outNote is the line under one of your messages, when it needs one: why it
+// failed, that it's waiting for the computer, or how many wait in the queue
+// (on the last of them).
+function outNote(it, waiting) {
+  if (failed(it)) {
+    const what = { refused: "refused", failed: "failed", stale: "not delivered" }[it.state];
+    return { text: it.reason ? `${what} · ${it.reason}` : what };
+  }
+  if (it.state === "queued") return { text: "waiting for the computer to be reachable" };
+  if (it.state === "resent") return { text: "sent again below" };
+  if (waiting.length && it === waiting[waiting.length - 1]) {
+    return { queued: true, text: waiting.length > 1 ? `${waiting.length} waiting in the session's inbox` : "waiting in the session's inbox" };
+  }
+  return {};
+}
+
+// chatHeader is a chat's bar: back, the session, where it runs, and the
+// search button, with the search row under it while it's open.
+function chatHeader(p, task, session, hits, current) {
   const offline = macOffline(p);
-  const input = h("textarea", { rows: "1", placeholder: canSend ? (offline ? "The computer is offline; this waits until it's back" : "Message") : "", maxlength: "4000", "aria-label": "Message", enterkeyhint: "enter" });
+  const header = bar(task, {
+    back: goBack, action: chatSearchButton(),
+    backCount: itemsCache.filter((it) => it.dir === "in" && !it.read && !(it.mac === p.mac_id && it.task === task)).length,
+    sub: h("span", { class: offline ? "status warn" : session ? "status ok" : "status" },
+      [macLabel(p), offline ? "offline" : session ? "live" : "not running", session?.project].filter(Boolean).join(" · ")),
+  });
+  if (state.tsearch) header.append(chatSearchRow(hits.length, hits.indexOf(current)));
+  return header;
+}
+
+// chatComposer is one rounded panel with the send button inside it, like
+// Messages: the round up-arrow appears only once there's something to send,
+// the field grows with the text up to a few lines, and a reply's quote sits
+// at the top of the same panel.
+function chatComposer(p, task, session, canSend) {
+  if (!canSend) {
+    return h("p", { class: "muted pad" }, session
+      ? "Read only: this computer's flow-remote is too old to take messages for it."
+      : "This session isn't running on the computer.");
+  }
+  const input = h("textarea", { rows: "1", placeholder: macOffline(p) ? "The computer is offline; this waits until it's back" : "Message", maxlength: "4000", "aria-label": "Message", enterkeyhint: "enter" });
   const sendBtn = h("button", { class: "send", type: "submit", "aria-label": "Send", hidden: true },
     svgIcon("M12 19V5M5 12l7-7 7 7"));
   const grow = () => {
@@ -1150,34 +1304,84 @@ function threadScreen(p) {
     }
   });
   requestAnimationFrame(grow); // a restored draft needs sizing too
-  const composer = canSend
-    ? h("form", {
-      class: "composer",
-      onsubmit: async (ev) => {
-        ev.preventDefault();
-        const body = input.value.trim();
-        if (!body) return;
-        input.value = "";
-        grow();
-        input.focus(); // keep the keyboard up, as Messages does
-        await send(p, task, body, state.replyTo?.id);
-        state.replyTo = null;
-      },
-    },
-    state.replyTo ? h("div", { class: "replying" },
-      h("span", {}, "Replying to: ", state.replyTo.body.slice(0, 80)),
-      h("button", { type: "button", class: "link", onclick: () => go("thread", { replyTo: null }) }, "✕")) : null,
-    h("div", { class: "pill" }, input, sendBtn))
-    : h("p", { class: "muted pad" }, session
-      ? "Read only: this computer's flow-remote is too old to take messages for it."
-      : "This session isn't running on the computer.");
+  const onsubmit = async (ev) => {
+    ev.preventDefault();
+    const body = input.value.trim();
+    if (!body) return;
+    input.value = "";
+    grow();
+    input.focus(); // keep the keyboard up, as Messages does
+    await send(p, task, body, state.replyTo?.id);
+    state.replyTo = null;
+  };
+  return h("form", { class: "composer", onsubmit },
+    h("div", { class: "field" },
+      state.replyTo ? h("div", { class: "replying" },
+        h("div", {}, h("b", {}, task), h("span", {}, state.replyTo.body)),
+        h("button", { type: "button", "aria-label": "Don't reply to this message", onclick: () => go("thread", { replyTo: null }) }, "✕")) : null,
+      h("div", { class: "pill" }, input, sendBtn)));
+}
+// showMessage scrolls a thread to one message and lights it up briefly.
+function showMessage(id) {
+  const el = root.querySelector(`[data-id="${CSS.escape(id)}"]`);
+  if (!el) return;
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  el.classList.remove("flash");
+  void el.offsetWidth; // restart the animation
+  el.classList.add("flash");
+  setTimeout(() => el.classList.remove("flash"), 1200);
+}
 
-  return h("main", { class: "threadview" },
-    bar(task, { back: goBack, backCount: itemsCache.filter((it) => it.dir === "in" && !it.read && !(it.mac === p.mac_id && it.task === task)).length, sub: h("span", { class: offline ? "status warn" : session ? "status ok" : "status" }, [macLabel(p), offline ? "offline" : session ? "live" : "not running", session?.project].filter(Boolean).join(" · ")) }),
-    h("div", { class: "thread", onscroll: trackPin }, items.length ? items.map(bubble) : h("p", { class: "muted pad" }, "No messages yet.")),
-    // render() keeps this slot's element across renders while its markup
-    // is unchanged, so the field keeps focus and the keyboard stays up.
-    h("div", { class: "composer-slot" }, composer));
+// chatSearchButton opens and closes the search row in a chat's header.
+function chatSearchButton() {
+  return h("button", {
+    class: `icon-btn${state.tsearch ? " on" : ""}`, "aria-label": "Search this chat",
+    onclick: () => {
+      state.tsearch = !state.tsearch;
+      state.tquery = "";
+      render();
+      if (state.tsearch) root.querySelector("input.tsearch")?.focus();
+    },
+  }, svgIcon("M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM21 21l-4.35-4.35"));
+}
+
+// The search row under a chat's header: the field, "2 of 5", older and
+// newer, and close. The newest match is the first one shown.
+function chatSearchRow(count, at) {
+  const jump = (step) => {
+    if (!count) return;
+    state.thit = (at + step + count) % count;
+    render();
+    scrollToHit();
+  };
+  const close = () => { state.tsearch = false; state.tquery = ""; render(); };
+  const field = h("input", {
+    class: "tsearch", type: "search", placeholder: "Search this chat", value: state.tquery,
+    autocomplete: "off", autocapitalize: "off", spellcheck: "false", "aria-label": "Search this chat",
+    enterkeyhint: "search",
+  });
+  field.addEventListener("input", () => {
+    state.tquery = field.value;
+    state.thit = Number.MAX_SAFE_INTEGER; // the newest match
+    render();
+    scrollToHit();
+  });
+  field.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") close();
+    if (e.key === "Enter") { e.preventDefault(); jump(e.shiftKey ? 1 : -1); }
+  });
+  return h("div", { class: "chatsearch" },
+    field,
+    h("span", { class: "count" }, state.tquery.trim() ? (count ? `${at + 1} of ${count}` : "No matches") : ""),
+    h("button", { class: "icon-btn", "aria-label": "Older match", disabled: count < 2 ? true : null, onclick: () => jump(-1) }, svgIcon("M6 15l6-6 6 6")),
+    h("button", { class: "icon-btn", "aria-label": "Newer match", disabled: count < 2 ? true : null, onclick: () => jump(1) }, svgIcon("M6 9l6 6 6-6")),
+    h("button", { class: "clear", type: "button", "aria-label": "Close search", onclick: close }, "✕"));
+}
+
+// scrollToHit brings the current search match into view.
+function scrollToHit() {
+  const el = root.querySelector(".msg.found");
+  if (el) el.scrollIntoView({ block: "center" });
 }
 
 function envLabel() {
@@ -1194,6 +1398,7 @@ function settingsScreen() {
       h("p", {}, "Computer id: ", h("code", {}, p.mac_id)),
       h("p", {}, "This phone, for this computer: ", h("code", {}, p.device_id)),
       h("p", {}, "Fingerprint: ", h("code", { class: "fp" }, p.device_fp)),
+      updateNote(p),
       h("button", { class: "danger", onclick: () => unpair(p) }, "Unpair from this computer"),
       h("p", { class: "muted" }, "Unpairing deletes this phone's key for that computer and keeps its messages. Also run ",
         h("code", {}, `flow-remote revoke ${p.device_id}`), " on it."))),
@@ -1202,6 +1407,16 @@ function settingsScreen() {
       h("button", { class: "link", onclick: forgetEverything }, "Delete everything on this phone"),
       storageLine()),
     aboutSection());
+}
+
+// updateNote tells you to upgrade flow-remote on a computer that has a
+// newer release waiting. The phone's app follows on its own afterwards.
+function updateNote(p) {
+  const update = state.updates[p.mac_id];
+  if (!update) return null;
+  return h("div", { class: "update-note" },
+    h("p", {}, h("b", {}, `flow-remote ${update} is out.`), " On this computer, run:"),
+    cmd("flow-remote upgrade"));
 }
 
 const kb = (n) => (n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
@@ -1250,6 +1465,7 @@ function aboutSection() {
 async function unpair(p) {
   state.pairings = state.pairings.filter((x) => x !== p);
   delete state.sessions[p.mac_id];
+  delete state.updates[p.mac_id];
   if (state.active === p.mac_id) state.active = state.pairings[0]?.mac_id || null;
   await savePairings();
   if (state.pairings.length === 0) {
@@ -1265,7 +1481,7 @@ async function forgetEverything() {
   if (!confirm("Delete every pairing and all message history from this phone?")) return;
   stopPolling();
   await db.forget();
-  Object.assign(state, { pairings: [], active: null, sessions: {}, macSeen: {}, unreachable: {} });
+  Object.assign(state, { pairings: [], active: null, sessions: {}, macSeen: {}, unreachable: {}, updates: {} });
   itemsCache = [];
   go("welcome");
 }
@@ -1273,7 +1489,7 @@ async function forgetEverything() {
 // ---- messaging ----
 
 function sealToMac(p, msg) {
-  return seal(JSON.stringify(msg), p.keys.sign.privateKey, p.device_id, p.mac_id, p.mac_box_pub);
+  return seal(JSON.stringify(msg), p.keys.sign.privateKey, { from: p.device_id, to: p.mac_id }, p.mac_box_pub);
 }
 
 async function send(p, task, body, replyTo) {
@@ -1327,94 +1543,105 @@ async function flushQueued(p) {
 
 async function sendSync(p) {
   if (!p?.confirmed) return;
-  try { await api.postEnvelope(api.signerFor(p), await sealToMac(p, { kind: "sync" })); } catch {}
+  try {
+    await api.postEnvelope(api.signerFor(p), await sealToMac(p, { kind: "sync" }));
+  } catch {
+    // Unreachable now: the next poll and the relay's own updates catch up.
+  }
 }
 
 // handle verifies and applies one envelope from p's Mac. It returns
 // normally for junk too, so junk gets acked and doesn't come back.
 async function handle(p, e) {
-  if (e.from !== p.mac_id || e.to !== p.device_id) return;
+  const m = await openFromMac(p, e);
+  if (m && Object.hasOwn(onMessage, m.kind)) await onMessage[m.kind](p, m);
+}
+
+// openFromMac returns what's inside e, or null unless e is addressed from
+// p's Mac to this phone, carries the Mac's signature, is seen for the
+// first time, and decrypts. Verifying comes before anything else looks
+// at the envelope.
+async function openFromMac(p, e) {
+  if (e.from !== p.mac_id || e.to !== p.device_id) return null;
   try {
     await verify(e, p.mac_sign_pub);
   } catch {
-    return;
+    return null;
   }
-  if (!(await db.firstSighting(e.id))) return;
-  let m;
+  if (!(await db.firstSighting(e.id))) return null;
   try {
-    m = JSON.parse(await open(e, p.keys.box));
+    return JSON.parse(await open(e, p.keys.box));
   } catch {
-    return;
-  }
-  const here = state.view === "thread" && state.active === p.mac_id;
-  switch (m.kind) {
-    case "paired":
-      p.confirmed = true;
-      p.mac_name = m.mac_name;
-      await savePairings();
-      sendSync(p);
-      render();
-      break;
-    case "sessions":
-      state.sessions[p.mac_id] = m.sessions || [];
-      await db.set(`sessions:${p.mac_id}`, state.sessions[p.mac_id]);
-      break;
-    case "status": {
-      const it = await db.getItem(`c:${m.client_id}`);
-      if (!it) break;
-      it.state = m.state;
-      it.reason = m.reason || "";
-      it.flow_id = m.flow_id || "";
-      await db.putItem(it);
-      if (m.state === "delivered" && it.reply_to) {
-        const answered = await db.getItem(`m:${p.mac_id}:${it.reply_to}`);
-        if (answered) {
-          answered.replied = true;
-          await db.putItem(answered);
-        }
-      }
-      break;
-    }
-    case "mail": {
-      const mail = m.mail;
-      // flow message ids are only unique per Mac, so scope by Mac.
-      const id = `m:${p.mac_id}:${mail.flow_id}`;
-      if (await db.getItem(id)) break;
-      await db.putItem({
-        id, mac: p.mac_id, task: mail.task, dir: "in", body: mail.body, ts: mail.created_at, flow_id: mail.flow_id,
-        urgent: Boolean(mail.urgent), broadcast: Boolean(mail.broadcast), reply_to: mail.reply_to || null,
-        read: here && state.task === mail.task, replied: false,
-      });
-      // In the open thread, offer to answer what just arrived; anywhere
-      // else, say it arrived.
-      if (here && state.task === mail.task) {
-        if (!mail.broadcast && !state.replyTo) state.replyTo = { id: mail.flow_id, body: mail.body };
-      } else if (!mail.broadcast && Date.now() - mail.created_at < 10 * 60_000) {
-        showToast({ mac: p.mac_id, task: mail.task, body: mail.body });
-      }
-      break;
-    }
+    return null;
   }
 }
+
+// onMessage applies each kind of message from the Mac.
+const onMessage = {
+  // The Mac enrolled this phone.
+  async paired(p, m) {
+    p.confirmed = true;
+    p.mac_name = m.mac_name;
+    await savePairings();
+    sendSync(p);
+    render();
+  },
+  // The sessions running there now, and a newer flow-remote release if
+  // the computer's last check found one.
+  async sessions(p, m) {
+    state.sessions[p.mac_id] = m.sessions || [];
+    state.updates[p.mac_id] = m.update || "";
+    await db.set(`sessions:${p.mac_id}`, state.sessions[p.mac_id]);
+    await db.set(`update:${p.mac_id}`, state.updates[p.mac_id]);
+  },
+  // How far one of your messages got. A delivered reply marks the message
+  // it answers as replied.
+  async status(p, m) {
+    const it = await db.getItem(`c:${m.client_id}`);
+    if (!it) return;
+    it.state = m.state;
+    it.reason = m.reason || "";
+    it.flow_id = m.flow_id || "";
+    await db.putItem(it);
+    if (m.state !== "delivered" || !it.reply_to) return;
+    const answered = await db.getItem(`m:${p.mac_id}:${it.reply_to}`);
+    if (answered) {
+      answered.replied = true;
+      await db.putItem(answered);
+    }
+  },
+  // A message from a session.
+  async mail(p, m) {
+    const mail = m.mail;
+    // flow message ids are only unique per Mac, so scope by Mac.
+    const id = `m:${p.mac_id}:${mail.flow_id}`;
+    if (await db.getItem(id)) return;
+    const inThread = state.view === "thread" && state.active === p.mac_id && state.task === mail.task;
+    await db.putItem({
+      id, mac: p.mac_id, task: mail.task, dir: "in", body: mail.body, ts: mail.created_at, flow_id: mail.flow_id,
+      urgent: Boolean(mail.urgent), broadcast: Boolean(mail.broadcast), reply_to: mail.reply_to || null,
+      read: inThread, replied: false,
+    });
+    // In the open thread, offer to answer what just arrived; anywhere
+    // else, say it arrived.
+    if (inThread) {
+      if (!mail.broadcast && !state.replyTo) state.replyTo = { id: mail.flow_id, body: mail.body };
+    } else if (!mail.broadcast && Date.now() - mail.created_at < 10 * 60_000) {
+      showToast({ mac: p.mac_id, task: mail.task, body: mail.body });
+    }
+  },
+};
 
 let polling = false;
 let pollTimer = null;
 
+// pollPairing fetches, applies and acks p's new mail, and on status
+// rounds asks when the Mac was last seen. It returns whether the screen
+// needs redrawing.
 async function pollPairing(p, withStatus) {
-  const signer = api.signerFor(p);
   try {
-    const res = await api.listEnvelopes(signer);
-    const ids = [];
-    for (const rec of res.envelopes || []) {
-      await handle(p, rec.env);
-      ids.push(rec.env.id);
-    }
-    if (ids.length) await api.ack(signer, ids);
-    if (withStatus && p.confirmed) {
-      const st = await api.status(signer);
-      const seen = st.macs?.[p.mac_id]?.last_seen;
-      state.macSeen[p.mac_id] = seen ? new Date(seen) : null;
-    }
+    const got = await takeMail(p);
+    if (withStatus && p.confirmed) await checkMacSeen(p);
     p.rejected = false;
     const back = Boolean(state.unreachable[p.mac_id]);
     state.unreachable[p.mac_id] = false;
@@ -1422,23 +1649,48 @@ async function pollPairing(p, withStatus) {
     // unreachable can only be fetched now.
     if (back) checkForUpdate();
     if (p.confirmed) await flushQueued(p);
-    return ids.length > 0 || back; // redraw when it comes back, too
+    return got || back; // redraw when it comes back, too
   } catch (e) {
-    // Before the Mac confirms pairing, the mailbox doesn't know this
-    // device yet, so 401 is expected. After that it means revoked.
-    if (e.status === 401 && p.confirmed) p.rejected = true;
-    // A Mac that serves the phone itself can't be reached while it's
-    // asleep: show it offline straight away.
-    if (api.offline(e) && p.confirmed) {
-      // Why, as best the phone can tell: see unreachableLine.
-      const why = navigator.onLine === false ? "phone-offline" : api.netKind(e);
-      if (state.unreachable[p.mac_id] !== why) {
-        state.unreachable[p.mac_id] = why;
-        return true; // redraw now, not on the next status check
-      }
-    }
-    return false;
+    return pollFailed(p, e);
   }
+}
+
+// takeMail applies each envelope waiting for this phone, then acks them
+// all, junk included, so none comes back. It says whether there were any.
+async function takeMail(p) {
+  const signer = api.signerFor(p);
+  const res = await api.listEnvelopes(signer);
+  const ids = [];
+  for (const rec of res.envelopes || []) {
+    await handle(p, rec.env);
+    ids.push(rec.env.id);
+  }
+  if (ids.length) await api.ack(signer, ids);
+  return ids.length > 0;
+}
+
+// checkMacSeen records when p's Mac last checked its mailbox.
+async function checkMacSeen(p) {
+  const st = await api.status(api.signerFor(p));
+  const seen = st.macs?.[p.mac_id]?.last_seen;
+  state.macSeen[p.mac_id] = seen ? new Date(seen) : null;
+}
+
+// pollFailed notes why a poll of p failed, and returns whether that
+// changes what the screen says.
+function pollFailed(p, e) {
+  if (!p.confirmed) return false;
+  // Before the Mac confirms pairing, the mailbox doesn't know this device
+  // yet, so 401 is expected. After that it means revoked.
+  if (e.status === 401) p.rejected = true;
+  // A Mac that serves the phone itself can't be reached while it's
+  // asleep: show it offline straight away.
+  if (!api.offline(e)) return false;
+  // Why, as best the phone can tell: see unreachableLine.
+  const why = navigator.onLine === false ? "phone-offline" : api.netKind(e);
+  if (state.unreachable[p.mac_id] === why) return false;
+  state.unreachable[p.mac_id] = why;
+  return true; // redraw now, not on the next status check
 }
 
 function startPolling() {
@@ -1467,7 +1719,11 @@ function stopPolling() {
 // fragment, so the page doesn't reload. Pick it up here.
 window.addEventListener("hashchange", () => {
   let offer = null;
-  try { offer = parseOffer(location.hash); } catch {}
+  try {
+    offer = parseOffer(location.hash);
+  } catch {
+    // Not a pairing link (or a broken one): open the app as usual.
+  }
   if (location.hash) history.replaceState(null, "", location.pathname);
   if (!offer) return;
   if (state.pairings.some((p) => p.mac_id === offer.mac_id && !p.rejected)) {
@@ -1538,7 +1794,10 @@ async function loadState() {
   }
   state.pairings = pairings;
   state.active = (await db.get("active")) || pairings[0]?.mac_id || null;
-  for (const p of pairings) state.sessions[p.mac_id] = (await db.get(`sessions:${p.mac_id}`)) || [];
+  for (const p of pairings) {
+    state.sessions[p.mac_id] = (await db.get(`sessions:${p.mac_id}`)) || [];
+    state.updates[p.mac_id] = (await db.get(`update:${p.mac_id}`)) || "";
+  }
   itemsCache = await db.allItems();
 }
 

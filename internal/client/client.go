@@ -60,11 +60,9 @@ func (c *Client) now() time.Time {
 	return time.Now()
 }
 
-func (c *Client) do(ctx context.Context, method, path string, body any, signed bool, out any) error {
-	return c.doWith(ctx, method, path, body, signed, nil, out)
-}
-
-func (c *Client) doWith(ctx context.Context, method, path string, body any, signed bool, hdr http.Header, out any) error {
+// do sends one request to the mailbox, signed as this Mac, and decodes
+// the answer into out unless out is nil.
+func (c *Client) do(ctx context.Context, method, path string, body any, out any) error {
 	var raw []byte
 	if body != nil {
 		var err error
@@ -79,13 +77,8 @@ func (c *Client) doWith(ctx context.Context, method, path string, body any, sign
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	for k, v := range hdr {
-		req.Header[k] = v
-	}
-	if signed {
-		if err := reqsig.Sign(req, c.Mac.ID, c.Mac.Sign, raw, c.now()); err != nil {
-			return err
-		}
+	if err := reqsig.Sign(req, c.Mac.ID, c.Mac.Sign, raw, c.now()); err != nil {
+		return err
 	}
 	hc := c.HTTP
 	if hc == nil {
@@ -113,14 +106,14 @@ func (c *Client) doWith(ctx context.Context, method, path string, body any, sign
 
 // OpenPair lets the phone post one enrollment for pairID.
 func (c *Client) OpenPair(ctx context.Context, pairID string) error {
-	return c.do(ctx, "POST", "/v1/relay/pairs", map[string]string{"pair_id": pairID}, true, nil)
+	return c.do(ctx, "POST", "/v1/relay/pairs", map[string]string{"pair_id": pairID}, nil)
 }
 
 // TakePair fetches the phone's enrollment for pairID, or ErrNotFound if it
 // hasn't arrived yet.
 func (c *Client) TakePair(ctx context.Context, pairID string) (*envelope.Envelope, error) {
 	var e envelope.Envelope
-	if err := c.do(ctx, "GET", "/v1/relay/pairs/"+pairID, nil, true, &e); err != nil {
+	if err := c.do(ctx, "GET", "/v1/relay/pairs/"+pairID, nil, &e); err != nil {
 		return nil, err
 	}
 	return &e, nil
@@ -128,7 +121,7 @@ func (c *Client) TakePair(ctx context.Context, pairID string) (*envelope.Envelop
 
 // PutDevice lets the mailbox accept requests signed by this device.
 func (c *Client) PutDevice(ctx context.Context, dev identity.Device) error {
-	return c.do(ctx, "POST", "/v1/relay/devices", map[string]string{"device_id": dev.ID, "sign_pub": dev.SignPub}, true, nil)
+	return c.do(ctx, "POST", "/v1/relay/devices", map[string]string{"device_id": dev.ID, "sign_pub": dev.SignPub}, nil)
 }
 
 // DeviceStatus is the mailbox's view of one of this Mac's phones.
@@ -144,27 +137,27 @@ func (c *Client) Devices(ctx context.Context) ([]DeviceStatus, int, error) {
 		Devices  []DeviceStatus `json:"devices"`
 		IdleDays int            `json:"idle_days"`
 	}
-	err := c.do(ctx, "GET", "/v1/relay/devices", nil, true, &out)
+	err := c.do(ctx, "GET", "/v1/relay/devices", nil, &out)
 	return out.Devices, out.IdleDays, err
 }
 
 func (c *Client) RevokeDevice(ctx context.Context, deviceID string) error {
-	return c.do(ctx, "POST", "/v1/relay/devices/"+deviceID+"/revoke", nil, true, nil)
+	return c.do(ctx, "POST", "/v1/relay/devices/"+deviceID+"/revoke", nil, nil)
 }
 
 func (c *Client) List(ctx context.Context) (Batch, error) {
 	var b Batch
-	err := c.do(ctx, "GET", "/v1/relay/envelopes", nil, true, &b)
+	err := c.do(ctx, "GET", "/v1/relay/envelopes", nil, &b)
 	return b, err
 }
 
 func (c *Client) Post(ctx context.Context, e *envelope.Envelope) error {
-	return c.do(ctx, "POST", "/v1/relay/envelopes", e, true, nil)
+	return c.do(ctx, "POST", "/v1/relay/envelopes", e, nil)
 }
 
 func (c *Client) Ack(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	return c.do(ctx, "POST", "/v1/relay/ack", map[string]any{"ids": ids}, true, nil)
+	return c.do(ctx, "POST", "/v1/relay/ack", map[string]any{"ids": ids}, nil)
 }

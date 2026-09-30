@@ -98,7 +98,7 @@ func (r *rig) enrollment(o pairing.Offer) *envelope.Envelope {
 	m.Write(en.MACInput())
 	en.MAC = envelope.Encode(m.Sum(nil))
 	pt, _ := json.Marshal(en)
-	e, _ := envelope.Seal(pt, r.sign, r.deviceID, r.mac.ID, r.mac.Box.PublicKey(), r.clk.Now().UnixMilli())
+	e, _ := envelope.Seal(pt, r.sign, envelope.Route{From: r.deviceID, To: r.mac.ID}, r.mac.Box.PublicKey(), r.clk.Now().UnixMilli())
 	return e
 }
 
@@ -151,7 +151,7 @@ func (r *rig) pair() {
 }
 
 func (r *rig) phoneEnvelope(text string) *envelope.Envelope {
-	e, _ := envelope.Seal([]byte(text), r.sign, r.deviceID, r.mac.ID, r.mac.Box.PublicKey(), r.clk.Now().UnixMilli())
+	e, _ := envelope.Seal([]byte(text), r.sign, envelope.Route{From: r.deviceID, To: r.mac.ID}, r.mac.Box.PublicKey(), r.clk.Now().UnixMilli())
 	return e
 }
 
@@ -181,7 +181,7 @@ func TestRoundTrip(t *testing.T) {
 	}
 
 	// Mac -> phone.
-	reply, _ := envelope.Seal([]byte("hi phone"), r.mac.Sign, r.mac.ID, r.deviceID, r.box.PublicKey(), r.clk.Now().UnixMilli())
+	reply, _ := envelope.Seal([]byte("hi phone"), r.mac.Sign, envelope.Route{From: r.mac.ID, To: r.deviceID}, r.box.PublicKey(), r.clk.Now().UnixMilli())
 	if err := r.relay.Post(ctx, reply); err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestPhoneAuth(t *testing.T) {
 		t.Errorf("wrong key = %d", resp.StatusCode)
 	}
 	// A device can't send as another device.
-	spoof, _ := envelope.Seal([]byte("x"), r.sign, "dev-someoneelse", r.mac.ID, r.mac.Box.PublicKey(), r.clk.Now().UnixMilli())
+	spoof, _ := envelope.Seal([]byte("x"), r.sign, envelope.Route{From: "dev-someoneelse", To: r.mac.ID}, r.mac.Box.PublicKey(), r.clk.Now().UnixMilli())
 	if code, _ := r.phone("POST", "/v1/envelopes", spoof, true); code != http.StatusBadRequest {
 		t.Errorf("spoofed from = %d", code)
 	}
@@ -296,7 +296,7 @@ func TestRelayAuth(t *testing.T) {
 	if _, err := old.List(ctx); err == nil {
 		t.Fatal("stale signature accepted")
 	}
-	e, _ := envelope.Seal([]byte("x"), r.mac.Sign, "mac-other", r.deviceID, r.box.PublicKey(), r.clk.Now().UnixMilli())
+	e, _ := envelope.Seal([]byte("x"), r.mac.Sign, envelope.Route{From: "mac-other", To: r.deviceID}, r.box.PublicKey(), r.clk.Now().UnixMilli())
 	if err := r.relay.Post(ctx, e); err == nil {
 		t.Fatal("relay sent as another mac")
 	}
@@ -338,7 +338,7 @@ func TestIdleDeviceExpires(t *testing.T) {
 
 	// Unused past the window: refused, and the relay can't queue for it.
 	r.clk.Add(31 * 24 * time.Hour)
-	reply, _ := envelope.Seal([]byte("x"), r.mac.Sign, r.mac.ID, r.deviceID, r.box.PublicKey(), r.clk.Now().UnixMilli())
+	reply, _ := envelope.Seal([]byte("x"), r.mac.Sign, envelope.Route{From: r.mac.ID, To: r.deviceID}, r.box.PublicKey(), r.clk.Now().UnixMilli())
 	if err := r.relay.Post(ctx, reply); err == nil {
 		t.Error("relay queued mail for an expired device")
 	}

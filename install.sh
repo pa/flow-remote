@@ -3,7 +3,7 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/pa/flow-remote/main/install.sh | sh
 #
-# If the GitHub CLI is signed in, it downloads with that; otherwise curl.
+# It downloads anonymously with curl, so it never uses your GitHub login.
 # Settings:
 #   FLOW_REMOTE_INSTALL_DIR  where to put it (default ~/.local/bin)
 #   FLOW_REMOTE_VERSION      a release tag instead of the latest, e.g. v0.2.0
@@ -27,27 +27,22 @@ case $(uname -m) in
 esac
 [ "$os" = darwin ] || die "flow-remote runs on macOS for now (this is $os)"
 
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+tmp=$(mktemp -d) || die "can't make a temporary folder"
+# ${tmp:?} refuses to run with an empty path, so the cleanup can only ever
+# remove the folder mktemp made.
+trap 'rm -rf -- "${tmp:?}"' EXIT
 
-if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-  tag=${WANT:-$(gh release view -R "$REPO" --json tagName -q .tagName)} || die "no release found"
-  name="flow-remote_${tag}_${os}_${arch}.tar.gz"
-  say "downloading $name with gh..."
-  gh release download "$tag" -R "$REPO" -p "$name" -p checksums.txt -D "$tmp" || die "download failed"
+if [ -z "$WANT" ]; then
+  tag=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)
+  [ -n "$tag" ] || die "no release found (or GitHub is rate-limiting this address)"
 else
-  if [ -z "$WANT" ]; then
-    tag=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)
-    [ -n "$tag" ] || die "no release found"
-  else
-    tag=$WANT
-  fi
-  name="flow-remote_${tag}_${os}_${arch}.tar.gz"
-  base="https://github.com/$REPO/releases/download/$tag"
-  say "downloading $name..."
-  curl -fsSL -o "$tmp/$name" "$base/$name" || die "download failed"
-  curl -fsSL -o "$tmp/checksums.txt" "$base/checksums.txt" || die "download failed"
+  tag=$WANT
 fi
+name="flow-remote_${tag}_${os}_${arch}.tar.gz"
+base="https://github.com/$REPO/releases/download/$tag"
+say "downloading $name..."
+curl -fsSL -o "$tmp/$name" "$base/$name" || die "download failed"
+curl -fsSL -o "$tmp/checksums.txt" "$base/checksums.txt" || die "download failed"
 
 (cd "$tmp" && grep " $name\$" checksums.txt | shasum -a 256 -c -) >/dev/null || die "$name doesn't match its checksum; not installing it"
 tar -xzf "$tmp/$name" -C "$tmp"

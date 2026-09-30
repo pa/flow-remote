@@ -18,7 +18,7 @@ switch (req.mode) {
     // Act as a phone: sign with a fresh device key, seal to the Mac.
     const id = await env.generateIdentity(true);
     const pub = await env.exportPublic(id);
-    const e = await env.seal(req.plaintext, id.sign.privateKey, "dev-js", "mac", req.mac_box_pub, req.ts);
+    const e = await env.seal(req.plaintext, id.sign.privateKey, { from: "dev-js", to: "mac" }, req.mac_box_pub, req.ts);
     out = { sign_pub: pub.sign_pub, env: e };
     break;
   }
@@ -58,7 +58,7 @@ switch (req.mode) {
     const id = await env.generateIdentity(true);
     const pub = await env.exportPublic(id);
     const body = new TextEncoder().encode(req.body);
-    out = { sign_pub: pub.sign_pub, headers: await signHeaders(req.method, req.path, body, req.id, id.sign.privateKey, req.ts) };
+    out = { sign_pub: pub.sign_pub, headers: await signHeaders(req.method, req.path, body, { id: req.id, key: id.sign.privateKey }, req.ts) };
     break;
   }
   default:

@@ -68,14 +68,17 @@ func NewID() string {
 	return b64.EncodeToString(b)
 }
 
+// Route is who an envelope is from and to: device or Mac ids.
+type Route struct{ From, To string }
+
 // Seal encrypts plaintext to recipient and signs the result with sender.
 // ts is unix milliseconds.
-func Seal(plaintext []byte, sender *ecdsa.PrivateKey, from, to string, recipient *ecdh.PublicKey, ts int64) (*Envelope, error) {
+func Seal(plaintext []byte, sender *ecdsa.PrivateKey, r Route, recipient *ecdh.PublicKey, ts int64) (*Envelope, error) {
 	eph, err := ecdh.P256().GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
 	}
-	e := &Envelope{V: Version, ID: NewID(), From: from, To: to, TS: ts, EPK: b64.EncodeToString(eph.PublicKey().Bytes())}
+	e := &Envelope{V: Version, ID: NewID(), From: r.From, To: r.To, TS: ts, EPK: b64.EncodeToString(eph.PublicKey().Bytes())}
 
 	aead, err := sealKey(eph, recipient, eph.PublicKey(), recipient)
 	if err != nil {

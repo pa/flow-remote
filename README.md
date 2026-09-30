@@ -45,6 +45,14 @@ service, which aren't done yet.
 curl -fsSL https://raw.githubusercontent.com/pa/flow-remote/main/install.sh | sh
 ```
 
+To read the script before running it:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/pa/flow-remote/main/install.sh
+less install.sh      # it downloads a release, checks its checksum, and copies one file
+sh install.sh
+```
+
 The script downloads the latest release for your Mac's chip, checks it
 against the release's `checksums.txt`, and installs `flow-remote` to
 `~/.local/bin`. Set `FLOW_REMOTE_INSTALL_DIR` for somewhere else, or
@@ -56,6 +64,13 @@ To upgrade later:
 flow-remote upgrade           # installs the latest release in place and restarts the background service
 flow-remote upgrade --check   # only says whether there's a newer one
 ```
+
+You don't have to remember to check. The running service asks GitHub for
+the latest release once a day. When there's a newer one, `flow-remote
+status` says so, and the phone shows a dot on the Settings gear with the
+command to run. The check is anonymous and only sends GitHub the usual
+request for the latest release. To turn it off, set
+`FLOW_REMOTE_NO_UPDATE_CHECK=1` for the service.
 
 **From source** (needs Go 1.26):
 
@@ -118,7 +133,9 @@ off".
 ## 5. Pair your phone
 
 1. Install the Tailscale app on the phone, sign in to the same tailnet, and
-   turn it on.
+   turn it on. Sign in with your own account, never with the auth key from
+   setup: a phone tagged `tag:flow-remote` counts as a server, not as one of
+   your devices, and the policy won't let it reach the computer.
 2. On the computer, run `flow-remote pair`. It shows a QR code for 2
    minutes (`--png FILE` saves it as an image as well).
 3. **First time on an iPhone:**
@@ -207,6 +224,7 @@ The computer refuses that key from then on. A phone that's gone unused for
 | `mailbox.sock` | how `pair`, `devices` and `revoke` reach the running server (mode 0600) |
 | `seen.json`, `forwarded.json` | the replay guard, and which session mail went to the phone |
 | `audit.log`, `relay.log` | what was delivered, refused or forwarded (never message text), and the service's log |
+| `latest.json` | the newest release the daily check found |
 
 ## Releases
 
@@ -225,7 +243,7 @@ git tag v0.1.0 && git push origin v0.1.0
 `.github/workflows/release.yml` then builds `flow-remote` for macOS
 (arm64, amd64), stamps the version, and attaches the archives with
 `checksums.txt` to a GitHub release. `install.sh` and `flow-remote upgrade`
-download from there.
+download from there, anonymously: neither uses your GitHub login.
 
 ## Development
 

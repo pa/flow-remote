@@ -64,7 +64,7 @@ func TestInteropMacToPhone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e, err := Seal([]byte("reply from go ✓"), mac.sign, "mac", "dev-js", boxPub, time.Now().UnixMilli())
+	e, err := Seal([]byte("reply from go ✓"), mac.sign, Route{From: "mac", To: "dev-js"}, boxPub, time.Now().UnixMilli())
 	if err != nil {
 		t.Fatal(err)
 	}
