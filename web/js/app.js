@@ -8,6 +8,7 @@
 // Every message body comes from a flow session or from the user, so the UI
 // is built with DOM nodes and textContent, never innerHTML.
 import * as api from "./api.js";
+import { segments, matches as findInChat } from "./highlight.js";
 import * as db from "./db.js";
 import { b64u, generateIdentity, exportPublic, fingerprint, seal, verify, open } from "./envelope.js";
 import { parseOffer, newDeviceId, enrollmentEnvelope } from "./pairing.js";
@@ -32,6 +33,9 @@ const state = {
   offer: null,
   error: "",
   replyTo: null,
+  tsearch: false, // the search row in a chat is open
+  tquery: "",
+  thit: 0, // which match is current
   query: "", // sessions-screen search
   toast: null, // {mac, task, body}: a reply that just arrived elsewhere
 };
@@ -163,8 +167,9 @@ function ago(ms) {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
+// clock is a message's time the way chat apps show it: "8:21 PM" or "20:21".
 function clock(ms) {
-  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
 // whenLabel is a divider's time: "10:42", "Yesterday 10:42", "Mon 10:42",
@@ -317,7 +322,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v42";
+const BUILD = "v44";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -432,8 +437,16 @@ function render({ stickToBottom = false } = {}) {
     const atBottom = threadPinned;
     const top = list.scrollTop;
     const nextList = next.querySelector(".thread");
+    // The chat's search field is in the header: keep typing in it.
+    const liveSearch = oldMain.querySelector("input.tsearch");
+    const searching = liveSearch && document.activeElement === liveSearch ? { start: liveSearch.selectionStart, end: liveSearch.selectionEnd } : null;
     oldMain.replaceChild(next.querySelector("header"), oldMain.querySelector("header"));
     oldMain.replaceChild(nextList, list);
+    const nextSearch = oldMain.querySelector("input.tsearch");
+    if (searching && nextSearch) {
+      nextSearch.focus();
+      nextSearch.setSelectionRange(searching.start, searching.end);
+    }
     nextList.scrollTop = stickToBottom || atBottom ? nextList.scrollHeight : top;
     root.querySelector(".toast")?.remove();
     if (toast) root.append(toast);
@@ -975,6 +988,10 @@ function sessionsScreen(p) {
     autocomplete: "off", autocapitalize: "off", spellcheck: "false", "aria-label": "Search",
   });
   searchBox.addEventListener("input", () => { state.query = searchBox.value; render(); });
+  const clearSearch = state.query ? h("button", {
+    class: "clear", type: "button", "aria-label": "Clear search",
+    onclick: () => { state.query = ""; render(); root.querySelector("input.search")?.focus(); },
+  }, "✕") : null;
 
   let body;
   const q = state.query.trim();
@@ -1036,7 +1053,7 @@ function sessionsScreen(p) {
   return h("main", {},
     bar(macLabel(p), { sub: macLine(p), action: settingsButton(p) }),
     macSwitcher(),
-    h("div", { class: "searchbar" }, searchBox),
+    h("div", { class: "searchbar" }, searchBox, clearSearch),
     h("div", { class: `list ${offline ? "dim" : ""}` }, body));
 }
 
@@ -1051,7 +1068,7 @@ async function openThread(task) {
   }
   itemsCache = await db.allItems();
   const pending = [...items].reverse().find((it) => it.dir === "in" && !it.replied && !it.broadcast);
-  go("thread", { task, replyTo: pending ? { id: pending.flow_id, body: pending.body } : null });
+  go("thread", { task, replyTo: pending ? { id: pending.flow_id, body: pending.body } : null, tsearch: false, tquery: "" });
 }
 
 function threadScreen(p) {
@@ -1061,8 +1078,8 @@ function threadScreen(p) {
   const canSend = Boolean(session?.can_send);
 
   // Messages from one side within a few minutes form a run: tight
-  // spacing, and the time only under the last one. A gap of an hour or
-  // more gets a divider with the time.
+  // spacing, and a tail only on the last one. A gap of an hour or more
+  // gets a divider with the time.
   const RUN_MS = 5 * 60_000;
   const GAP_MS = 60 * 60_000;
   const sameRun = (a, b) => a && b && a.dir === b.dir && Math.abs(b.ts - a.ts) < RUN_MS;
@@ -1071,54 +1088,71 @@ function threadScreen(p) {
   // its inbox (Facets-cloud/flow#100), but an answer means it did.
   const answered = answeredTest(items);
   const waiting = items.filter((it) => it.dir === "out" && it.state === "delivered" && !answered(it));
-  // A message that answers another shows a quote of it; tap to go there.
+
+  // Search within this chat.
+  const hits = state.tsearch ? findInChat(items, state.tquery) : [];
+  const current = hits[Math.min(Math.max(state.thit, 0), hits.length - 1)];
+  const text = (it) => state.tsearch && state.tquery.trim()
+    ? segments(it.body, state.tquery).map((s) => (s.hit ? h("mark", { class: it === current ? "hit now" : "hit" }, s.text) : s.text))
+    : it.body;
+
+  // A message that answers another opens with a quote of it, WhatsApp
+  // style: who said it and the start of what they said. Tap to go there.
   const byFlow = new Map(items.filter((it) => it.flow_id).map((it) => [it.flow_id, it]));
   const quote = (it) => {
     const target = it.reply_to && byFlow.get(it.reply_to);
     if (!target) return null;
     return h("button", {
-      class: "quote", type: "button", "aria-label": "Show the message this answers",
-      onclick: () => {
-        const el = root.querySelector(`[data-id="${CSS.escape(target.id)}"]`);
-        if (!el) return;
-        el.scrollIntoView({ behavior: "smooth", block: "center" });
-        el.classList.add("flash");
-        setTimeout(() => el.classList.remove("flash"), 1200);
-      },
-    }, "↩ ", target.body.length > 90 ? target.body.slice(0, 90) + "…" : target.body);
+      class: "rq", type: "button", "aria-label": "Show the message this answers",
+      onclick: (e) => { e.stopPropagation(); showMessage(target.id); },
+    }, h("span", {}, h("b", {}, target.dir === "out" ? "You" : task), h("i", {}, target.body)));
   };
-  // Tap one of the session's messages to answer that one.
+  // Tap one of the session's messages, or swipe it, to answer that one.
   const replyTo = (it) => () => {
     state.replyTo = { id: it.flow_id, body: it.body };
     render();
     root.querySelector(".composer textarea")?.focus();
+  };
+  // Ticks, as in WhatsApp, for what we know: ✓ reached the computer, grey
+  // ✓✓ in the session's inbox, teal ✓✓ answered. A clock while it's still
+  // on its way; ! if it didn't make it.
+  const ticks = (it) => {
+    const bad = it.state === "refused" || it.state === "failed" || it.state === "stale";
+    if (bad) return h("span", { class: "ticks bad", title: it.state }, "!");
+    if (it.state === "sending" || it.state === "queued") return h("span", { class: "ticks wait", title: it.state }, "◷");
+    if (it.state === "sent") return h("span", { class: "ticks", title: "reached the computer" }, "✓");
+    return answered(it)
+      ? h("span", { class: "ticks read", title: "answered" }, "✓✓")
+      : h("span", { class: "ticks", title: "in the session's inbox" }, "✓✓");
   };
   const bubble = (it, i) => {
     const prev = items[i - 1], next = items[i + 1];
     const last = !sameRun(it, next);
     const run = `${sameRun(prev, it) ? " cont" : ""}${last ? "" : " more"}`;
     const divider = !prev || it.ts - prev.ts >= GAP_MS ? h("div", { class: "divider" }, whenLabel(it.ts)) : null;
+    const q = quote(it);
+    const found = it === current ? " found" : "";
     if (it.dir === "in") {
       const tappable = canSend && it.flow_id && !it.broadcast;
       const chosen = state.replyTo?.id === it.flow_id;
-      return [divider, h("div", { class: `msg in${run}${chosen ? " chosen" : ""}`, "data-id": it.id },
-        quote(it),
-        h("div", { class: `bubble them${tappable ? " tappable" : ""}`, onclick: tappable ? replyTo(it) : null, title: tappable ? "Reply to this" : null },
-          it.urgent ? h("span", { class: "chip urgent" }, "urgent") : null, it.body),
-        last || it.broadcast ? h("span", { class: "meta" }, `${clock(it.ts)}${it.broadcast ? " · broadcast" : ""}`) : null)];
+      return [divider, h("div", { class: `msg in${run}${chosen ? " chosen" : ""}${found}`, "data-id": it.id },
+        h("div", { class: `bubble them${q ? " hasq" : ""}${tappable ? " tappable" : ""}`, onclick: tappable ? replyTo(it) : null, title: tappable ? "Tap or swipe to reply" : null },
+          q,
+          h("span", { class: "body" }, it.urgent ? h("span", { class: "chip urgent" }, "urgent") : null, text(it),
+            h("span", { class: "stamp" }, clock(it.ts), it.broadcast ? " · all" : null))))];
     }
-    const place = waiting.indexOf(it);
-    const inQueue = place < 0 ? "delivered" : waiting.length > 1 ? `waiting in the session's inbox · ${place + 1} of ${waiting.length}` : "waiting in the session's inbox";
-    const label = { sending: "sending…", queued: "waiting for the computer to be reachable", sent: "sent, waiting for the computer", delivered: inQueue, refused: "refused", failed: "failed", stale: "not delivered", resent: "sent again below" }[it.state] || it.state;
     const bad = it.state === "refused" || it.state === "failed" || it.state === "stale";
-    // Each message's own fate matters, so anything but "delivered" shows
-    // even mid-run.
-    const showMeta = last || it.state !== "delivered" || place >= 0;
-    return [divider, h("div", { class: `msg out${run}${place >= 0 ? " queued" : ""}`, "data-id": it.id },
-      quote(it),
-      h("div", { class: "bubble me" }, it.body),
-      showMeta ? h("span", { class: `meta ${bad ? "bad" : ""}` },
-        `${clock(it.ts)} · ${label}${it.reason ? ` · ${it.reason}` : ""}`) : null,
+    const lastWaiting = waiting.length && it === waiting[waiting.length - 1];
+    const note = bad ? `${{ refused: "refused", failed: "failed", stale: "not delivered" }[it.state]}${it.reason ? ` · ${it.reason}` : ""}`
+      : it.state === "queued" ? "waiting for the computer to be reachable"
+      : it.state === "resent" ? "sent again below"
+      : lastWaiting ? (waiting.length > 1 ? `${waiting.length} waiting in the session's inbox` : "waiting in the session's inbox")
+      : "";
+    return [divider, h("div", { class: `msg out${run}${lastWaiting ? " queued" : ""}${found}`, "data-id": it.id },
+      h("div", { class: `bubble me${q ? " hasq" : ""}` },
+        q,
+        h("span", { class: "body" }, text(it), h("span", { class: "stamp" }, clock(it.ts), " ", ticks(it)))),
+      note ? h("span", { class: `note${bad ? " bad" : ""}` }, note) : null,
       // The relay won't act on a message that waited too long in the
       // mailbox; sending it again is a deliberate, fresh decision.
       it.state === "stale" && canSend ? h("button", {
@@ -1130,9 +1164,10 @@ function threadScreen(p) {
       }, "Send again") : null)];
   };
 
-  // One rounded field with the send button inside it, like Messages: the
+  // One rounded panel with the send button inside it, like Messages: the
   // round up-arrow appears only once there's something to send, and the
-  // field grows with the text up to a few lines.
+  // field grows with the text up to a few lines. A reply's quote sits at
+  // the top of the same panel.
   const offline = macOffline(p);
   const input = h("textarea", { rows: "1", placeholder: canSend ? (offline ? "The computer is offline; this waits until it's back" : "Message") : "", maxlength: "4000", "aria-label": "Message", enterkeyhint: "enter" });
   const sendBtn = h("button", { class: "send", type: "submit", "aria-label": "Send", hidden: true },
@@ -1164,20 +1199,89 @@ function threadScreen(p) {
         state.replyTo = null;
       },
     },
-    state.replyTo ? h("div", { class: "replying" },
-      h("span", {}, "Replying to: ", state.replyTo.body.slice(0, 80)),
-      h("button", { type: "button", class: "link", onclick: () => go("thread", { replyTo: null }) }, "✕")) : null,
-    h("div", { class: "pill" }, input, sendBtn))
+    h("div", { class: "field" },
+      state.replyTo ? h("div", { class: "replying" },
+        h("div", {}, h("b", {}, task), h("span", {}, state.replyTo.body)),
+        h("button", { type: "button", "aria-label": "Don't reply to this message", onclick: () => go("thread", { replyTo: null }) }, "✕")) : null,
+      h("div", { class: "pill" }, input, sendBtn)))
     : h("p", { class: "muted pad" }, session
       ? "Read only: this computer's flow-remote is too old to take messages for it."
       : "This session isn't running on the computer.");
 
+  const header = bar(task, {
+    back: goBack, action: chatSearchButton(),
+    backCount: itemsCache.filter((it) => it.dir === "in" && !it.read && !(it.mac === p.mac_id && it.task === task)).length,
+    sub: h("span", { class: offline ? "status warn" : session ? "status ok" : "status" }, [macLabel(p), offline ? "offline" : session ? "live" : "not running", session?.project].filter(Boolean).join(" · ")),
+  });
+  if (state.tsearch) header.append(chatSearchRow(hits.length, hits.indexOf(current)));
+
   return h("main", { class: "threadview" },
-    bar(task, { back: goBack, backCount: itemsCache.filter((it) => it.dir === "in" && !it.read && !(it.mac === p.mac_id && it.task === task)).length, sub: h("span", { class: offline ? "status warn" : session ? "status ok" : "status" }, [macLabel(p), offline ? "offline" : session ? "live" : "not running", session?.project].filter(Boolean).join(" · ")) }),
+    header,
     h("div", { class: "thread", onscroll: trackPin }, items.length ? items.map(bubble) : h("p", { class: "muted pad" }, "No messages yet.")),
     // render() keeps this slot's element across renders while its markup
     // is unchanged, so the field keeps focus and the keyboard stays up.
     h("div", { class: "composer-slot" }, composer));
+}
+
+// showMessage scrolls a thread to one message and lights it up briefly.
+function showMessage(id) {
+  const el = root.querySelector(`[data-id="${CSS.escape(id)}"]`);
+  if (!el) return;
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  el.classList.remove("flash");
+  void el.offsetWidth; // restart the animation
+  el.classList.add("flash");
+  setTimeout(() => el.classList.remove("flash"), 1200);
+}
+
+function chatSearchButton() {
+  return h("button", {
+    class: `icon-btn${state.tsearch ? " on" : ""}`, "aria-label": "Search this chat",
+    onclick: () => {
+      state.tsearch = !state.tsearch;
+      state.tquery = "";
+      render();
+      if (state.tsearch) root.querySelector("input.tsearch")?.focus();
+    },
+  }, svgIcon("M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM21 21l-4.35-4.35"));
+}
+
+// The search row under a chat's header: the field, "2 of 5", older and
+// newer, and close. The newest match is the first one shown.
+function chatSearchRow(count, at) {
+  const jump = (step) => {
+    if (!count) return;
+    state.thit = (at + step + count) % count;
+    render();
+    scrollToHit();
+  };
+  const close = () => { state.tsearch = false; state.tquery = ""; render(); };
+  const field = h("input", {
+    class: "tsearch", type: "search", placeholder: "Search this chat", value: state.tquery,
+    autocomplete: "off", autocapitalize: "off", spellcheck: "false", "aria-label": "Search this chat",
+    enterkeyhint: "search",
+  });
+  field.addEventListener("input", () => {
+    state.tquery = field.value;
+    state.thit = Number.MAX_SAFE_INTEGER; // the newest match
+    render();
+    scrollToHit();
+  });
+  field.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") close();
+    if (e.key === "Enter") { e.preventDefault(); jump(e.shiftKey ? 1 : -1); }
+  });
+  return h("div", { class: "chatsearch" },
+    field,
+    h("span", { class: "count" }, state.tquery.trim() ? (count ? `${at + 1} of ${count}` : "No matches") : ""),
+    h("button", { class: "icon-btn", "aria-label": "Older match", disabled: count < 2 ? true : null, onclick: () => jump(-1) }, svgIcon("M6 15l6-6 6 6")),
+    h("button", { class: "icon-btn", "aria-label": "Newer match", disabled: count < 2 ? true : null, onclick: () => jump(1) }, svgIcon("M6 9l6 6 6-6")),
+    h("button", { class: "clear", type: "button", "aria-label": "Close search", onclick: close }, "✕"));
+}
+
+function scrollToHit() {
+  const el = root.querySelector(".msg.found");
+  if (el) el.scrollIntoView({ block: "center" });
 }
 
 function envLabel() {

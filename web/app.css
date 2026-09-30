@@ -105,8 +105,6 @@ html.kb-open .composer { padding-bottom: 6px; }
 .send { width: 30px; height: 30px; border-radius: 50%; background: var(--accent); color: #fff; display: grid; place-items: center; flex: none; }
 .send svg { width: 17px; height: 17px; }
 .send[hidden] { display: none; }
-.replying { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
-.replying span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .photo { display: block; }
 .photo .button-like { display: block; text-align: center; border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; cursor: pointer; }
 .guide h2 { font-size: 16px; }
@@ -217,17 +215,8 @@ main { will-change: auto; }
 .dot.busy { background: var(--accent); opacity: 1; box-shadow: 0 0 0 0 rgba(10, 132, 255, 0.5); animation: busy 1.6s ease-out infinite; }
 @keyframes busy { 0% { box-shadow: 0 0 0 0 rgba(10, 132, 255, 0.55); } 100% { box-shadow: 0 0 0 7px rgba(10, 132, 255, 0); } }
 @media (prefers-reduced-motion: reduce) { .dot.busy { animation: none; } }
-/* Your messages still in the session's queue. */
-.msg.queued .meta { color: var(--accent); }
-.msg.queued .me { opacity: 0.85; }
-/* A message that answers another starts with a quote of it. */
-.quote { align-self: stretch; max-width: 85%; display: block; text-align: left; font-size: 12.5px; line-height: 1.35;
-  color: var(--muted); padding: 5px 10px; margin-bottom: 3px; border-left: 2px solid var(--line);
-  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-.msg.out .quote { align-self: flex-end; border-left: 0; border-right: 2px solid rgba(10, 132, 255, 0.5); text-align: right; }
 .bubble.tappable { cursor: pointer; }
 .bubble.tappable:active { filter: brightness(1.25); }
-.msg.chosen .them { box-shadow: 0 0 0 2px var(--accent); }
 .msg.flash .bubble { animation: flash 1.2s ease-out; }
 @keyframes flash { 0%, 40% { box-shadow: 0 0 0 3px var(--accent); } 100% { box-shadow: 0 0 0 0 transparent; } }
 @media (prefers-reduced-motion: reduce) { .msg.flash .bubble { animation: none; outline: 2px solid var(--accent); } }
@@ -238,3 +227,84 @@ main { will-change: auto; }
   font-size: 17px; color: var(--muted); opacity: 0; transition: opacity 0.12s, transform 0.12s; }
 .msg.in.swipe-ready::before { opacity: 1; color: var(--accent); transform: translateY(-50%) scale(1); }
 .storage { font-size: 13px; text-align: center; }
+
+/* ---- Chats, WhatsApp style (v43) ---- */
+:root { --you: #5eb3ff; --session-name: #3ce0c8; --me-bg: #1f7ae8; --them-bg: #2a2c31; --answered: #5ff2dc; }
+.thread { padding: 10px 10px 12px; background: radial-gradient(1200px 400px at 50% -200px, rgba(10, 220, 206, 0.05), transparent); }
+.msg { margin-bottom: 8px; max-width: 100%; }
+.msg.more { margin-bottom: 2px; }
+.bubble { position: relative; max-width: 80%; font-size: 15.5px; line-height: 1.35; padding: 7px 10px 6px 11px;
+  border-radius: 17px; box-shadow: 0 1px 1px rgba(0, 0, 0, 0.25); }
+.me { background: var(--me-bg); }
+.them { background: var(--them-bg); border: 0; }
+/* A tail only on the last bubble of a run. */
+.msg.out:not(.more) .me { border-bottom-right-radius: 5px; }
+.msg.in:not(.more) .them { border-bottom-left-radius: 5px; }
+.msg.out.more .me, .msg.in.more .them { border-radius: 17px; }
+.msg.out.cont .me { border-top-right-radius: 7px; }
+.msg.in.cont .them { border-top-left-radius: 7px; }
+.msg.out.cont.more .me { border-top-right-radius: 7px; border-bottom-right-radius: 7px; }
+.msg.in.cont.more .them { border-top-left-radius: 7px; border-bottom-left-radius: 7px; }
+.bubble .body { display: block; }
+.bubble::after { content: ""; display: block; clear: both; }
+/* The quote, set into the top of the bubble. */
+.bubble.hasq { padding: 4px 4px 6px; min-width: 190px; }
+.bubble.hasq .body { padding: 5px 6px 0 7px; }
+.rq { display: flex; width: 100%; text-align: left; border-radius: 12px; overflow: hidden; color: inherit;
+  background: rgba(255, 255, 255, 0.07); transition: filter 0.12s; }
+.rq:active { filter: brightness(1.25); }
+.rq::before { content: ""; width: 3.5px; flex: none; background: var(--c); }
+.rq > span { padding: 5px 10px 6px 8px; min-width: 0; }
+.them .rq { --c: var(--you); }
+.me .rq { --c: var(--session-name); background: rgba(0, 0, 0, 0.2); }
+.rq b { display: block; font-size: 12.5px; font-weight: 650; color: var(--c); letter-spacing: -0.01em; }
+.rq i { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-style: normal;
+  font-size: 13.5px; line-height: 1.3; opacity: 0.72; white-space: normal; }
+/* Time and ticks inside the bubble, bottom right. */
+.stamp { float: right; position: relative; top: 5px; margin: 6px -2px -2px 10px; font-size: 11px; line-height: 1;
+  opacity: 0.62; white-space: nowrap; display: inline-flex; gap: 2px; align-items: center; }
+.me .stamp { opacity: 0.8; }
+.ticks { font-size: 11.5px; letter-spacing: -3px; margin-right: 3px; }
+.ticks.read { color: var(--answered); }
+.ticks.wait { letter-spacing: 0; font-size: 12px; }
+.ticks.bad { color: #ffb4ad; letter-spacing: 0; font-weight: 700; }
+.me .stamp:has(.read) { opacity: 1; }
+/* Only a message that needs a word gets one, under its bubble. */
+.msg .note { font-size: 11.5px; color: #69b4ff; margin: 3px 6px 0; }
+.msg .note.bad { color: var(--bad); }
+.msg.out .note { align-self: flex-end; }
+.divider { font-size: 11.5px; font-weight: 600; color: var(--muted); background: rgba(255, 255, 255, 0.06);
+  padding: 3px 10px; border-radius: 999px; margin: 6px 0 12px; }
+/* Tapped or swiped to reply: a ring on that message. */
+.msg.chosen .them { box-shadow: 0 0 0 2px var(--session-name); }
+.msg.flash .bubble { animation: flash 1.2s ease-out; }
+/* The reply and the field as one panel. */
+.composer { padding: 6px 8px calc(8px + env(safe-area-inset-bottom)); }
+.composer .field { background: #17191d; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 22px; overflow: hidden; }
+.composer .pill { background: none; border: 0; border-radius: 0; padding: 3px 4px 3px 14px; }
+.replying { display: flex; align-items: stretch; margin: 5px 5px 0; border-radius: 16px; overflow: hidden; background: rgba(255, 255, 255, 0.06); }
+.replying::before { content: ""; width: 3.5px; flex: none; background: var(--session-name); }
+.replying div { flex: 1; min-width: 0; padding: 6px 8px 7px 9px; }
+.replying b { display: block; font-size: 12.5px; color: var(--session-name); }
+.replying span { display: block; font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.replying button { width: 32px; color: var(--muted); font-size: 15px; }
+.send { width: 32px; height: 32px; margin: 2px; }
+
+/* Search: a clear button in the list's search, and a search row in chats. */
+.searchbar { position: relative; }
+.searchbar .clear { position: absolute; right: 24px; top: 50%; transform: translateY(-40%); }
+.clear { width: 22px; height: 22px; border-radius: 50%; background: rgba(255, 255, 255, 0.16); color: var(--ink);
+  font-size: 11px; line-height: 22px; text-align: center; flex: none; }
+.search::-webkit-search-cancel-button, .tsearch::-webkit-search-cancel-button { display: none; }
+.bar { flex-wrap: wrap; }
+.icon-btn.on { color: var(--accent); background: var(--off-soft); }
+.chatsearch { flex-basis: 100%; display: flex; align-items: center; gap: 4px; margin-top: 8px; }
+.chatsearch .tsearch { flex: 1; min-width: 0; border-radius: 10px; padding: 7px 11px; background: rgba(255, 255, 255, 0.07);
+  border: 1px solid transparent; font-size: 15px; }
+.chatsearch .tsearch:focus { outline: none; border-color: rgba(10, 132, 255, 0.6); }
+.chatsearch .count { font-size: 12.5px; color: var(--muted); min-width: 58px; text-align: right; }
+.chatsearch .icon-btn { width: 32px; height: 32px; }
+.chatsearch .icon-btn:disabled { opacity: 0.35; }
+.chatsearch .clear { margin-left: 2px; }
+mark.hit { background: rgba(255, 214, 10, 0.35); color: inherit; border-radius: 3px; padding: 0 1px; }
+mark.hit.now { background: #ffd60a; color: #1d1e22; }
