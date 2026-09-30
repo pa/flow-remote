@@ -27,11 +27,11 @@ test("the best start wins, not the first", () => {
 
 test("weights make a slug hit beat a notes hit", () => {
   const items = [
-    { slug: "phone-dispatch", name: "answers messages" },
+    { slug: "phone-app", name: "answers messages" },
     { slug: "globex-governance", name: "waiting on the phone team" },
   ];
   const r = search("phone", items, { slug: 3, name: 1 });
-  assert.equal(r[0].item.slug, "phone-dispatch");
+  assert.equal(r[0].item.slug, "phone-app");
   assert.equal(r.length, 2);
 });
 

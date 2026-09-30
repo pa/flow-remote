@@ -334,7 +334,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v52";
+const BUILD = "v53";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -955,13 +955,11 @@ const BAD = ["refused", "failed", "stale"];
 const WAIT_MS = 12 * 3600_000;
 
 // homeContext gathers what the main screen's rows need: this computer's
-// messages, its live sessions (phone-dispatch first, then the ones you
-// can message), the sessions that have only history, and helpers for
-// which of your messages are still unanswered.
+// messages, its live sessions in flow's order, the sessions that have only
+// history, and helpers for which of your messages are still unanswered.
 function homeContext(p) {
   const mine = itemsCache.filter((it) => it.mac === p.mac_id);
-  const live = [...(state.sessions[p.mac_id] || [])].sort((a, b) =>
-    (b.slug === "phone-dispatch") - (a.slug === "phone-dispatch") || (b.can_send - a.can_send));
+  const live = [...(state.sessions[p.mac_id] || [])];
   const liveSlugs = new Set(live.map((s) => s.slug));
   const earlier = [...new Set(mine.map((it) => it.task))].filter((t) => !liveSlugs.has(t)).sort();
   const lastOut = {}, lastAt = {};

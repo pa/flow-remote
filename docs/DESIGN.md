@@ -76,8 +76,8 @@ Before building multi-Mac support we compared existing tools (29 Sep 2026):
   similar session remotes (NaCl, Cloudflare + mTLS, Tailscale).
 
 We kept flow-remote because it works on flow's inbox, not one agent's
-session: `phone-dispatch`, mail across sessions, Codex as well as Claude,
-and per-device revocation.
+session: mail to and from any session, Codex as well as Claude, and
+per-device revocation.
 
 ### How Happier encrypts (from its source, commit 540601b0)
 
