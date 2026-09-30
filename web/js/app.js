@@ -160,6 +160,17 @@ function snippet(text, positions, width = 90) {
   return { text: (start > 0 ? "…" : "") + cut + "…", positions: positions.map((p) => p - start + (start > 0 ? 1 : 0)).filter((p) => p >= 0 && p < cut.length + 1) };
 }
 
+// listTime is when a session's latest message was, as chat lists show
+// it: the time today, the weekday this week, else the date.
+function listTime(ms, now = Date.now()) {
+  const d = new Date(ms), today = new Date(now);
+  if (d.toDateString() === today.toDateString()) return clock(ms);
+  const days = (new Date(today.toDateString()) - new Date(d.toDateString())) / 86400000;
+  if (days === 1) return "Yesterday";
+  if (days < 7) return d.toLocaleDateString([], { weekday: "short" });
+  return d.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
 function ago(ms) {
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
   if (s < 60) return `${s}s ago`;
@@ -323,7 +334,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v48";
+const BUILD = "v49";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -950,16 +961,17 @@ function homeContext(p) {
     (b.slug === "phone-dispatch") - (a.slug === "phone-dispatch") || (b.can_send - a.can_send));
   const liveSlugs = new Set(live.map((s) => s.slug));
   const earlier = [...new Set(mine.map((it) => it.task))].filter((t) => !liveSlugs.has(t)).sort();
-  const lastOut = {};
+  const lastOut = {}, lastAt = {};
   for (const it of mine) {
     if (it.dir === "out" && (!lastOut[it.task] || it.ts > lastOut[it.task].ts)) lastOut[it.task] = it;
+    lastAt[it.task] = Math.max(lastAt[it.task] || 0, it.ts);
   }
   const tests = new Map();
   const answeredIn = (slug) => {
     if (!tests.has(slug)) tests.set(slug, answeredTest(mine.filter((it) => it.task === slug)));
     return tests.get(slug);
   };
-  const home = { p, mine, live, earlier, lastOut, answeredIn, offline: macOffline(p) };
+  const home = { p, mine, live, earlier, lastOut, lastAt, answeredIn, offline: macOffline(p) };
   // How many of your delivered messages to slug haven't had their answer.
   home.waitingCount = (slug) =>
     mine.filter((it) => it.task === slug && it.dir === "out" && it.state === "delivered" && !answeredIn(slug)(it)).length;
@@ -989,7 +1001,8 @@ function sessionRow(home, slug, { sub = "", chip, cls, marks = {}, where = "" })
       h("span", { class: `dot ${cls}${busy}`, title: chip, "aria-label": chip }),
       h("span", { class: "slug" }, hl(slug, marks.slug)),
       n ? h("span", { class: "badge" }, n) : null,
-      cls === "live" ? null : h("span", { class: "state" }, chip)),
+      cls === "live" ? null : h("span", { class: "state" }, chip),
+      home.lastAt[slug] ? h("span", { class: "meta" }, listTime(home.lastAt[slug])) : null),
     sub ? h("span", { class: "sub" }, hl(sub, marks.sub)) : null,
     where ? h("span", { class: "where" }, hl(where, marks.where)) : null,
     o ? pendingLine(home, o) : null);
@@ -1074,9 +1087,15 @@ function messageHit(item, positions) {
     h("span", { class: "sub wrap" }, hl(sn.text, sn.positions)));
 }
 
-// homeSections lists the sessions with no query: new replies first,
-// newest on top with a preview, then those waiting for a reply, then the
-// rest in their usual order, then the ones no longer running.
+// byRecent orders sessions like a chat app: the latest message first.
+// Sessions with no messages keep their order, after the rest.
+function byRecent(home, slugOf = (s) => s.slug) {
+  return (a, b) => (home.lastAt[slugOf(b)] || 0) - (home.lastAt[slugOf(a)] || 0);
+}
+
+// homeSections lists the sessions with no query: new replies first, then
+// those waiting for a reply, then the rest, then the ones no longer
+// running. Each section has the latest message on top.
 function homeSections(home) {
   const latestUnread = {};
   for (const it of home.mine) {
@@ -1085,7 +1104,7 @@ function homeSections(home) {
   const replied = Object.values(latestUnread).sort((a, b) => b.ts - a.ts);
   const repliedSet = new Set(replied.map((it) => it.task));
   const liveBySlug = new Map(home.live.map((s) => [s.slug, s]));
-  const rest = home.live.filter((s) => !repliedSet.has(s.slug));
+  const rest = home.live.filter((s) => !repliedSet.has(s.slug)).sort(byRecent(home));
   const waiting = rest.filter((s) => home.awaiting(s.slug));
   return [
     group("New replies", replied.map((it) => repliedRow(home, it, liveBySlug.get(it.task))), "new"),
@@ -1093,7 +1112,7 @@ function homeSections(home) {
     group("Waiting for a reply", waiting.map((s) => liveRow(home, s)), "wait"),
     group(replied.length || home.live.some((s) => home.awaiting(s.slug)) ? "Sessions" : "",
       rest.filter((s) => !home.awaiting(s.slug)).map((s) => liveRow(home, s))),
-    group("Not running", home.earlier.filter((t) => !repliedSet.has(t)).map((slug) => endedRow(home, slug))),
+    group("Not running", home.earlier.filter((t) => !repliedSet.has(t)).sort(byRecent(home, (t) => t)).map((slug) => endedRow(home, slug))),
   ];
 }
 
@@ -1219,7 +1238,7 @@ function replyQuote(chat, it) {
   return h("button", {
     class: "rq", type: "button", "aria-label": "Show the message this answers",
     onclick: (e) => { e.stopPropagation(); showMessage(target.id); },
-  }, h("span", {}, h("b", {}, target.dir === "out" ? "You" : chat.task), h("i", {}, target.body)));
+  }, h("span", {}, h("b", {}, target.dir === "out" ? "You" : macLabel(chat.p)), h("i", {}, target.body)));
 }
 
 // replyTo makes the next message an answer to it, after a tap or a swipe.
@@ -1320,7 +1339,7 @@ function chatComposer(p, task, session, canSend) {
   return h("form", { class: "composer", onsubmit },
     h("div", { class: "field" },
       state.replyTo ? h("div", { class: "replying" },
-        h("div", {}, h("b", {}, task), h("span", {}, state.replyTo.body)),
+        h("div", {}, h("b", {}, macLabel(p)), h("span", {}, state.replyTo.body)),
         h("button", { type: "button", "aria-label": "Don't reply to this message", onclick: () => go("thread", { replyTo: null }) }, "✕")) : null,
       h("div", { class: "pill" }, input, sendBtn)));
 }
