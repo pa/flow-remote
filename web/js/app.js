@@ -334,7 +334,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v53";
+const BUILD = "v54";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -438,6 +438,10 @@ function render({ stickToBottom = false } = {}) {
   const view = state.view === "thread" ? `thread:${state.active}:${state.task}` : state.view;
   const sameView = shownView === view;
   if (sameView && html === shownHTML) return;
+  if (sameView && keepSearchField(next, stickToBottom)) {
+    finishRender(toast, html);
+    return;
+  }
 
   // In the same thread, keep the composer that's on screen unless it
   // changed: replacing it drops focus, and on a phone the keyboard then
@@ -454,10 +458,68 @@ function render({ stickToBottom = false } = {}) {
     swapScreen(next, sameView, stickToBottom);
     shownView = view;
   }
+  finishRender(toast, html);
+}
+
+// finishRender puts up the toast, if any, and records what's on screen.
+function finishRender(toast, html) {
   root.querySelector(".toast")?.remove();
   if (toast) root.append(toast);
   shownHTML = html;
   updateAppBadge();
+}
+
+// keepSearchField updates the screen around a search field you're typing
+// in, leaving the field itself in place. Replacing it, even with the focus
+// and cursor put back, drops whatever the phone's keyboard was still
+// composing: predictive text and autocorrect lose the word, and you lose
+// characters. The composer is kept too. It returns false, having changed
+// nothing, when no search field has focus or the screen changed shape.
+function keepSearchField(next, stickToBottom) {
+  const field = document.activeElement;
+  const main = root.querySelector("main");
+  if (!field?.matches?.("input.search, input.tsearch") || !main?.contains(field)) return false;
+  const path = pathTo(main, next, field);
+  if (!path) return false;
+  const list = main.querySelector(".thread");
+  const top = list ? list.scrollTop : 0;
+  for (const [live, fresh, keep] of path) {
+    syncAttributes(live, fresh);
+    const liveKids = [...live.childNodes], freshKids = [...fresh.childNodes];
+    liveKids.forEach((kid, i) => {
+      if (i === keep || kid.classList?.contains("composer-slot")) return;
+      live.replaceChild(freshKids[i], kid);
+    });
+  }
+  syncAttributes(field, path.at(-1)[1].childNodes[path.at(-1)[2]], ["value"]);
+  const nextList = main.querySelector(".thread");
+  if (nextList) nextList.scrollTop = stickToBottom || threadPinned ? nextList.scrollHeight : top;
+  return true;
+}
+
+// pathTo walks from live down to field, alongside the same places in
+// next: [liveNode, nextNode, index of the child on the way] at each step.
+// It returns null if the two differ in shape along the way.
+function pathTo(live, next, field) {
+  const path = [];
+  while (live !== field) {
+    if (!next || live.nodeName !== next.nodeName || live.childNodes.length !== next.childNodes.length) return null;
+    const i = [...live.childNodes].findIndex((kid) => kid.contains(field));
+    path.push([live, next, i]);
+    live = live.childNodes[i];
+    next = next.childNodes[i];
+  }
+  return next?.nodeName === field.nodeName ? path : null;
+}
+
+// syncAttributes makes live's attributes match fresh's, except skip.
+function syncAttributes(live, fresh, skip = []) {
+  for (const { name } of [...live.attributes]) {
+    if (!skip.includes(name) && !fresh.hasAttribute(name)) live.removeAttribute(name);
+  }
+  for (const { name, value } of fresh.attributes) {
+    if (!skip.includes(name) && live.getAttribute(name) !== value) live.setAttribute(name, value);
+  }
 }
 
 // caret is where the cursor is in el, if el has focus.
@@ -1051,10 +1113,11 @@ function homeSearchBar() {
     autocomplete: "off", autocapitalize: "off", spellcheck: "false", "aria-label": "Search",
   });
   searchBox.addEventListener("input", () => { state.query = searchBox.value; render(); });
-  const clearSearch = state.query ? h("button", {
-    class: "clear", type: "button", "aria-label": "Clear search",
+  // Always there, hidden with no query: the bar keeps its shape as you type.
+  const clearSearch = h("button", {
+    class: "clear", type: "button", "aria-label": "Clear search", hidden: state.query ? null : true,
     onclick: () => { state.query = ""; render(); root.querySelector("input.search")?.focus(); },
-  }, "✕") : null;
+  }, "✕");
   return h("div", { class: "searchbar" }, searchBox, clearSearch);
 }
 

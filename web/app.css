@@ -322,3 +322,6 @@ mark.hit.now { background: #ffd60a; color: #1d1e22; }
 /* iOS Safari zooms into any field whose text is under 16px when it gets
    focus. Keep every field at 16px or more. */
 input, textarea, select { font-size: max(16px, 1em) !important; }
+
+/* The search bar's clear button is always in the page, hidden with no query. */
+.searchbar .clear[hidden] { display: none; }
