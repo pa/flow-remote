@@ -105,27 +105,9 @@ func (k Keychain) Put(name string, value []byte) error {
 		return err
 	}
 	raw := k.store()
-	enc := base64.StdEncoding.EncodeToString(value)
-	var parts []string
-	for len(enc) > chunkSize {
-		parts, enc = append(parts, enc[:chunkSize]), enc[chunkSize:]
-	}
-	parts = append(parts, enc)
-	if len(parts) == 1 {
-		if err := raw.put(name, parts[0]); err != nil {
-			return err
-		}
-	} else {
-		// The rest first, then the head, so a reader never sees a head
-		// pointing at parts that aren't written yet.
-		for i := 1; i < len(parts); i++ {
-			if err := raw.put(chunkName(name, i), parts[i]); err != nil {
-				return err
-			}
-		}
-		if err := raw.put(name, fmt.Sprintf("%s%d:%s", chunkPrefix, len(parts), parts[0])); err != nil {
-			return err
-		}
+	parts := chunks(base64.StdEncoding.EncodeToString(value))
+	if err := putParts(raw, name, parts); err != nil {
+		return err
 	}
 	// Drop parts left over from an earlier, longer value.
 	for i := len(parts); ; i++ {
@@ -138,6 +120,31 @@ func (k Keychain) Put(name string, value []byte) error {
 		return fmt.Errorf("keychain put %s: read-back didn't match what was written (%v)", name, err)
 	}
 	return nil
+}
+
+// chunks splits enc into pieces of at most chunkSize, the most one
+// Keychain item holds reliably.
+func chunks(enc string) []string {
+	var parts []string
+	for len(enc) > chunkSize {
+		parts, enc = append(parts, enc[:chunkSize]), enc[chunkSize:]
+	}
+	return append(parts, enc)
+}
+
+// putParts writes a value split into parts: one part as is, several as a
+// head naming the count followed by numbered items. The numbered items go
+// first, so a reader never sees a head pointing at parts not written yet.
+func putParts(raw rawStore, name string, parts []string) error {
+	if len(parts) == 1 {
+		return raw.put(name, parts[0])
+	}
+	for i := 1; i < len(parts); i++ {
+		if err := raw.put(chunkName(name, i), parts[i]); err != nil {
+			return err
+		}
+	}
+	return raw.put(name, fmt.Sprintf("%s%d:%s", chunkPrefix, len(parts), parts[0]))
 }
 
 func (k Keychain) Delete(name string) error {

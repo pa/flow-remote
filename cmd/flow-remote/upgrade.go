@@ -164,13 +164,9 @@ func upgrade(ctx context.Context, args []string) error {
 // upgradeTo installs the latest release over exe if it's newer than this
 // build, and reports whether it did.
 func upgradeTo(ctx context.Context, exe string, check bool, out io.Writer) (bool, error) {
-	body, err := githubGet(ctx, releasesAPI+"/latest", "application/vnd.github+json")
+	rel, err := latestRelease(ctx)
 	if err != nil {
-		return false, fmt.Errorf("looking up the latest release: %w", err)
-	}
-	var rel release
-	if err := json.Unmarshal(body, &rel); err != nil || rel.Tag == "" {
-		return false, fmt.Errorf("reading the latest release: %v", err)
+		return false, err
 	}
 	if rel.Tag == version {
 		fmt.Fprintf(out, "flow-remote %s is the latest release.\n", version)
@@ -181,34 +177,10 @@ func upgradeTo(ctx context.Context, exe string, check bool, out io.Writer) (bool
 		return false, nil
 	}
 	name := fmt.Sprintf("flow-remote_%s_%s_%s.tar.gz", rel.Tag, runtime.GOOS, runtime.GOARCH)
-	var tarURL, sumsURL string
-	for _, a := range rel.Assets {
-		switch a.Name {
-		case name:
-			tarURL = a.URL
-		case "checksums.txt":
-			sumsURL = a.URL
-		}
-	}
-	if tarURL == "" || sumsURL == "" {
-		return false, fmt.Errorf("release %s has no %s (or no checksums.txt)", rel.Tag, name)
-	}
 	fmt.Fprintf(out, "downloading %s...\n", name)
-	tgz, err := githubGet(ctx, tarURL, "application/octet-stream")
+	tgz, err := downloadVerified(ctx, rel, name)
 	if err != nil {
 		return false, err
-	}
-	sums, err := githubGet(ctx, sumsURL, "application/octet-stream")
-	if err != nil {
-		return false, err
-	}
-	want, err := checksumFor(sums, name)
-	if err != nil {
-		return false, err
-	}
-	got := sha256.Sum256(tgz)
-	if hex.EncodeToString(got[:]) != want {
-		return false, fmt.Errorf("%s doesn't match its checksum; not installing it", name)
 	}
 	bin, err := binaryFrom(tgz)
 	if err != nil {
@@ -219,4 +191,51 @@ func upgradeTo(ctx context.Context, exe string, check bool, out io.Writer) (bool
 	}
 	fmt.Fprintf(out, "upgraded %s from %s to %s.\n", exe, version, rel.Tag)
 	return true, nil
+}
+
+// latestRelease looks up the newest published release.
+func latestRelease(ctx context.Context) (release, error) {
+	var rel release
+	body, err := githubGet(ctx, releasesAPI+"/latest", "application/vnd.github+json")
+	if err != nil {
+		return rel, fmt.Errorf("looking up the latest release: %w", err)
+	}
+	if err := json.Unmarshal(body, &rel); err != nil || rel.Tag == "" {
+		return rel, fmt.Errorf("reading the latest release: %v", err)
+	}
+	return rel, nil
+}
+
+// downloadVerified downloads the release asset called name and returns it
+// only if it matches its line in the release's checksums.txt.
+func downloadVerified(ctx context.Context, rel release, name string) ([]byte, error) {
+	var tarURL, sumsURL string
+	for _, a := range rel.Assets {
+		switch a.Name {
+		case name:
+			tarURL = a.URL
+		case "checksums.txt":
+			sumsURL = a.URL
+		}
+	}
+	if tarURL == "" || sumsURL == "" {
+		return nil, fmt.Errorf("release %s has no %s (or no checksums.txt)", rel.Tag, name)
+	}
+	tgz, err := githubGet(ctx, tarURL, "application/octet-stream")
+	if err != nil {
+		return nil, err
+	}
+	sums, err := githubGet(ctx, sumsURL, "application/octet-stream")
+	if err != nil {
+		return nil, err
+	}
+	want, err := checksumFor(sums, name)
+	if err != nil {
+		return nil, err
+	}
+	got := sha256.Sum256(tgz)
+	if hex.EncodeToString(got[:]) != want {
+		return nil, fmt.Errorf("%s doesn't match its checksum; not installing it", name)
+	}
+	return tgz, nil
 }

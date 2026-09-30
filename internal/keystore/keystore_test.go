@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -136,5 +137,23 @@ func TestKeychainLongReal(t *testing.T) {
 	defer k.Delete("long-item")
 	if got, err := k.Get("long-item"); err != nil || !bytes.Equal(got, big) {
 		t.Fatalf("got %d bytes, %v", len(got), err)
+	}
+}
+
+func TestChunks(t *testing.T) {
+	for _, n := range []int{0, 1, chunkSize, chunkSize + 1, 3*chunkSize + 7} {
+		enc := strings.Repeat("x", n)
+		parts := chunks(enc)
+		if strings.Join(parts, "") != enc {
+			t.Fatalf("%d: parts don't rejoin to the value", n)
+		}
+		for _, p := range parts {
+			if len(p) > chunkSize {
+				t.Fatalf("%d: a part of %d is over the limit", n, len(p))
+			}
+		}
+		if want := max(1, (n+chunkSize-1)/chunkSize); len(parts) != want {
+			t.Fatalf("%d: %d parts, want %d", n, len(parts), want)
+		}
 	}
 }

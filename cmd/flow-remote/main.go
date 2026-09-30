@@ -229,44 +229,12 @@ func tailscaleDir() string { return filepath.Join(home(), "tailscale") }
 // stays out of shell history and the process list, and it isn't saved:
 // after the first join the device's identity is in ~/.flow-remote/tailscale.
 func setupTailscale(app, name string) error {
-	if name == "" {
-		name, _ = os.Hostname()
-		name = strings.TrimSuffix(name, ".local")
-	}
-	host := tunnel.Hostname(name)
-	if prev, err := loadConfig(); err == nil && prev.Tunnel == "tailscale" && prev.Hostname != "" {
-		// Keep the name: it's part of the app's address, and a new one means
-		// pairing every phone again.
-		host = prev.Hostname
-	}
+	name, host := tailnetName(name)
 	ts := &tunnel.Tailscale{Dir: tailscaleDir(), Hostname: host, Logf: func(f string, a ...any) { fmt.Printf(f+"\n", a...) }}
 	if !tunnel.Joined(ts.Dir) {
-		key := os.Getenv("TS_AUTHKEY")
-		if key == "" && term.IsTerminal(int(os.Stdin.Fd())) {
-			if err := tailnetGuide(host); err != nil {
-				return err
-			}
-		}
-		if key == "" {
-			fmt.Print("Paste the auth key (input hidden): ")
-			var b []byte
-			var err error
-			if fd := int(os.Stdin.Fd()); term.IsTerminal(fd) {
-				b, err = term.ReadPassword(fd)
-			} else { // piped in, e.g. from a password manager's CLI
-				b, err = bufio.NewReader(os.Stdin).ReadBytes('\n')
-				if errors.Is(err, io.EOF) {
-					err = nil
-				}
-			}
-			fmt.Println()
-			if err != nil {
-				return fmt.Errorf("reading the key: %w", err)
-			}
-			key = strings.TrimSpace(string(b))
-		}
-		if !strings.HasPrefix(key, "tskey-") {
-			return errors.New("that doesn't look like a Tailscale auth key (tskey-...)")
+		key, err := authKey(host)
+		if err != nil {
+			return err
 		}
 		ts.AuthKey = key
 	}
@@ -287,6 +255,59 @@ func setupTailscale(app, name string) error {
 	fmt.Printf("Phones on your tailnet will reach it at %s\n", url)
 	fmt.Println("Next: `flow-remote start`, then `flow-remote pair`.")
 	return nil
+}
+
+// tailnetName returns the computer's display name (the host name when name
+// is empty) and its device name on the tailnet. A computer that already
+// joined keeps its device name: it's part of the app's address, and a new
+// one means pairing every phone again.
+func tailnetName(name string) (display, host string) {
+	if name == "" {
+		name, _ = os.Hostname()
+		name = strings.TrimSuffix(name, ".local")
+	}
+	if prev, err := loadConfig(); err == nil && prev.Tunnel == "tailscale" && prev.Hostname != "" {
+		return name, prev.Hostname
+	}
+	return name, tunnel.Hostname(name)
+}
+
+// authKey returns the Tailscale auth key from TS_AUTHKEY, or else asks for
+// it, after walking through the admin console when stdin is a terminal.
+func authKey(host string) (string, error) {
+	key := os.Getenv("TS_AUTHKEY")
+	if key == "" {
+		interactive := term.IsTerminal(int(os.Stdin.Fd()))
+		if interactive {
+			if err := tailnetGuide(host); err != nil {
+				return "", err
+			}
+		}
+		fmt.Print("Paste the auth key (input hidden): ")
+		b, err := readSecret(interactive)
+		fmt.Println()
+		if err != nil {
+			return "", fmt.Errorf("reading the key: %w", err)
+		}
+		key = strings.TrimSpace(string(b))
+	}
+	if !strings.HasPrefix(key, "tskey-") {
+		return "", errors.New("that doesn't look like a Tailscale auth key (tskey-...)")
+	}
+	return key, nil
+}
+
+// readSecret reads one line from stdin without echoing it at a terminal.
+// Piped in (from a password manager's CLI, say), it reads the first line.
+func readSecret(interactive bool) ([]byte, error) {
+	if interactive {
+		return term.ReadPassword(int(os.Stdin.Fd()))
+	}
+	b, err := bufio.NewReader(os.Stdin).ReadBytes('\n')
+	if errors.Is(err, io.EOF) {
+		err = nil
+	}
+	return b, err
 }
 
 // tailnetGuide walks through the admin console before asking for the key,
@@ -366,77 +387,102 @@ func pair(ctx context.Context, args []string) error {
 	}
 	mb := mailboxClient(cfg, mac)
 
-	// The app opens the pairing link. When it's served from somewhere other
-	// than this Mac's mailbox (another of your machines), the offer says
-	// where the mailbox is.
-	appURL, mailboxURL := cfg.App, ""
-	{
-		served, err := servedURL()
-		if err != nil {
-			return err
-		}
-		if appURL == "" {
-			appURL = served
-		}
-		if appURL != served {
-			mailboxURL = served
-		}
+	appURL, mailboxURL, err := pairingURLs(cfg)
+	if err != nil {
+		return err
 	}
 	offer := pairing.NewOffer(mac, mailboxURL, time.Now())
 	if err := mb.OpenPair(ctx, offer.PairID); err != nil {
 		return fmt.Errorf("opening the pairing: %w", explain(err))
 	}
-	link := offer.Link(appURL)
+	if err := showOffer(offer.Link(appURL), *png, mac); err != nil {
+		return err
+	}
+	dev, err := waitForPhone(ctx, mb, offer, mac)
+	if err != nil {
+		return err
+	}
+	if !confirm(fmt.Sprintf("\nPhone: %q\nIts fingerprint: %s\nDoes that match the fingerprint on the phone's screen? Enroll it? [y/N] ", dev.Name, dev.Fingerprint())) {
+		return errors.New("not enrolled")
+	}
+	if err := devs.Enroll(dev); err != nil {
+		return err
+	}
+	return announce(ctx, cfg, mac, mb, dev)
+}
+
+// pairingURLs returns the link the phone opens, and the mailbox address to
+// put in the offer. The mailbox address is empty when the app is served by
+// this computer itself; otherwise (the app comes from another of your
+// machines) the offer says where this computer's mailbox is.
+func pairingURLs(cfg config) (appURL, mailboxURL string, err error) {
+	served, err := servedURL()
+	if err != nil {
+		return "", "", err
+	}
+	appURL = cfg.App
+	if appURL == "" {
+		appURL = served
+	}
+	if appURL != served {
+		mailboxURL = served
+	}
+	return appURL, mailboxURL, nil
+}
+
+// showOffer prints the pairing QR code and link, and saves the code as a
+// PNG too when png names a file.
+func showOffer(link, png string, mac *identity.Mac) error {
 	code, err := qr.Encode(link, qr.L)
 	if err != nil {
 		return err
 	}
 	printQR(code)
-	if *png != "" {
+	if png != "" {
 		code.Scale = 12
-		if err := os.WriteFile(*png, code.PNG(), 0o600); err != nil {
+		if err := os.WriteFile(png, code.PNG(), 0o600); err != nil {
 			return err
 		}
-		fmt.Printf("QR code saved to %s\n", *png)
+		fmt.Printf("QR code saved to %s\n", png)
 	}
 	fmt.Printf("\nScan with your phone's camera, or open:\n%s\n\n", link)
 	fmt.Println("On an iPhone: the first time, this opens Safari. Add flow-remote to your Home Screen,")
 	fmt.Println("open it from there, tap \"Scan the QR code\", and scan this code again.")
 	fmt.Printf("This computer's fingerprint: %s\n", mac.Fingerprint())
 	fmt.Printf("The code expires in %s. Waiting for the phone...\n", pairing.TTL)
+	return nil
+}
 
-	var dev identity.Device
-	for {
-		if time.Now().UnixMilli() > offer.Expires {
-			return pairing.ErrExpired
-		}
+// waitForPhone polls the mailbox every two seconds until the phone answers
+// the offer, the offer expires, or ctx ends.
+func waitForPhone(ctx context.Context, mb *client.Client, offer pairing.Offer, mac *identity.Mac) (identity.Device, error) {
+	for time.Now().UnixMilli() <= offer.Expires {
 		e, err := mb.TakePair(ctx, offer.PairID)
-		if errors.Is(err, client.ErrNotFound) {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(2 * time.Second):
-				continue
-			}
+		if err == nil {
+			return pairing.Accept(offer, mac, e, time.Now())
 		}
-		if err != nil {
-			return err
+		if !errors.Is(err, client.ErrNotFound) {
+			return identity.Device{}, err
 		}
-		if dev, err = pairing.Accept(offer, mac, e, time.Now()); err != nil {
-			return err
+		select {
+		case <-ctx.Done():
+			return identity.Device{}, ctx.Err()
+		case <-time.After(2 * time.Second):
 		}
-		break
 	}
+	return identity.Device{}, pairing.ErrExpired
+}
 
-	fmt.Printf("\nPhone: %q\nIts fingerprint: %s\n", dev.Name, dev.Fingerprint())
-	fmt.Print("Does that match the fingerprint on the phone's screen? Enroll it? [y/N] ")
+// confirm prints question and reports whether the answer on stdin is "y".
+func confirm(question string) bool {
+	fmt.Print(question)
 	ans, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-	if strings.ToLower(strings.TrimSpace(ans)) != "y" {
-		return errors.New("not enrolled")
-	}
-	if err := devs.Enroll(dev); err != nil {
-		return err
-	}
+	return strings.ToLower(strings.TrimSpace(ans)) == "y"
+}
+
+// announce hands a newly enrolled phone to the running server and tells
+// the phone it's paired.
+func announce(ctx context.Context, cfg config, mac *identity.Mac, mb *client.Client, dev identity.Device) error {
 	if err := mb.PutDevice(ctx, dev); err != nil {
 		return fmt.Errorf("enrolled here, but the running server didn't take it (it syncs on start): %w", err)
 	}
@@ -564,39 +610,14 @@ func devices(args []string) error {
 	if err != nil {
 		return err
 	}
-	// Ask the running server when each phone last checked in; stopped is fine.
-	seen := map[string]client.DeviceStatus{}
-	idleDays := 0
-	if c, err := adminClient(); err == nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if list, idle, err := c.Devices(ctx); err == nil {
-			idleDays = idle
-			for _, d := range list {
-				seen[d.ID] = d
-			}
-		}
-		cancel()
-	}
+	seen, idleDays := checkIns()
 	shown, hidden := 0, 0
 	for _, d := range devs.List() {
 		if d.Revoked() && !all {
 			hidden++
 			continue
 		}
-		state, last := "active", "last seen unknown"
-		if st, ok := seen[d.ID]; ok {
-			if st.LastSeen != nil {
-				last = "last seen " + ago(*st.LastSeen)
-			} else {
-				last = "never seen"
-			}
-			if st.Expired {
-				state = "expired (unused " + fmt.Sprint(idleDays) + "+ days; pair again)"
-			}
-		}
-		if d.Revoked() {
-			state, last = "revoked "+d.RevokedAt.Format(time.DateOnly), ""
-		}
+		last, state := deviceState(d, seen, idleDays)
 		fmt.Printf("%s  %-22q  %s  enrolled %s  %-22s %s\n", d.ID, d.Name, d.Fingerprint(), d.EnrolledAt.Format(time.DateOnly), last, state)
 		shown++
 	}
@@ -607,6 +628,47 @@ func devices(args []string) error {
 		fmt.Printf("(%d revoked, not shown: `flow-remote devices --all`)\n", hidden)
 	}
 	return nil
+}
+
+// checkIns asks the running server when each phone last checked in, and
+// after how many idle days it stops taking a phone's messages. With the
+// server stopped, it returns nothing, and the list says "unknown".
+func checkIns() (map[string]client.DeviceStatus, int) {
+	seen := map[string]client.DeviceStatus{}
+	c, err := adminClient()
+	if err != nil {
+		return seen, 0
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	list, idle, err := c.Devices(ctx)
+	if err != nil {
+		return seen, 0
+	}
+	for _, d := range list {
+		seen[d.ID] = d
+	}
+	return seen, idle
+}
+
+// deviceState describes when a phone was last seen, and whether it's
+// active, expired or revoked.
+func deviceState(d identity.Device, seen map[string]client.DeviceStatus, idleDays int) (last, state string) {
+	if d.Revoked() {
+		return "", "revoked " + d.RevokedAt.Format(time.DateOnly)
+	}
+	st, ok := seen[d.ID]
+	if !ok {
+		return "last seen unknown", "active"
+	}
+	last, state = "never seen", "active"
+	if st.LastSeen != nil {
+		last = "last seen " + ago(*st.LastSeen)
+	}
+	if st.Expired {
+		state = "expired (unused " + fmt.Sprint(idleDays) + "+ days; pair again)"
+	}
+	return last, state
 }
 
 // ago says how long ago t was, to the second, with the clock time, so
