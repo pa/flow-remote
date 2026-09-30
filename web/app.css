@@ -261,7 +261,7 @@ main { will-change: auto; }
 .rq i { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-style: normal;
   font-size: 13.5px; line-height: 1.3; opacity: 0.72; white-space: normal; }
 /* Time and ticks inside the bubble, bottom right. */
-.stamp { float: right; position: relative; top: 5px; margin: 6px -2px -2px 10px; font-size: 11px; line-height: 1;
+.stamp { float: right; position: relative; top: 2px; margin: 6px -2px 0 10px; font-size: 11px; line-height: 1;
   opacity: 0.62; white-space: nowrap; display: inline-flex; gap: 2px; align-items: center; }
 .me .stamp { opacity: 0.8; }
 .ticks { font-size: 11.5px; letter-spacing: -3px; margin-right: 3px; }
