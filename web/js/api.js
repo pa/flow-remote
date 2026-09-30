@@ -39,9 +39,10 @@ async function sha256hex(bytes) {
   return Array.from(h, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-// signHeaders returns the X-FR-* headers for one request. path includes
-// the query string. Exported for the interop test.
-export async function signHeaders(method, path, body, id, key, ts = Date.now()) {
+// signHeaders returns the X-FR-* headers for one request, signed as
+// signer ({id, key}). path includes the query string. Exported for the
+// interop test.
+export async function signHeaders(method, path, body, { id, key }, ts = Date.now()) {
   const input = `flow-remote/v1 req\n${method}\n${path}\n${ts}\n${await sha256hex(body)}`;
   const sig = await subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, enc.encode(input));
   return { "X-FR-Key": id, "X-FR-TS": String(ts), "X-FR-Sig": b64u(sig) };
@@ -52,7 +53,7 @@ export async function signHeaders(method, path, body, id, key, ts = Date.now()) 
 async function call(signer, method, path, body, base = signer?.base ?? "") {
   const raw = body ? enc.encode(JSON.stringify(body)) : new Uint8Array();
   const headers = body ? { "Content-Type": "application/json" } : {};
-  if (signer) Object.assign(headers, await signHeaders(method, path, raw, signer.id, signer.key));
+  if (signer) Object.assign(headers, await signHeaders(method, path, raw, signer));
   const res = await fetchOrNetError(base + path, { method, headers, body: body ? raw : undefined, cache: "no-store" });
   if (!res.ok) throw new ApiError(res.status, await errorText(res));
   return res.status === 204 || res.status === 202 ? null : res.json();

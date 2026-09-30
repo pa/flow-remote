@@ -140,7 +140,7 @@ func (r *rig) phonePost(e *envelope.Envelope) {
 
 func (r *rig) phoneSend(m protocol.Msg, ts time.Time) *envelope.Envelope {
 	pt, _ := json.Marshal(m)
-	e, _ := envelope.Seal(pt, r.sign, r.device.ID, r.relay.Mac.ID, r.relay.Mac.Box.PublicKey(), ts.UnixMilli())
+	e, _ := envelope.Seal(pt, r.sign, envelope.Route{From: r.device.ID, To: r.relay.Mac.ID}, r.relay.Mac.Box.PublicKey(), ts.UnixMilli())
 	r.phonePost(e)
 	return e
 }
@@ -260,11 +260,11 @@ func TestReplayAndStrangers(t *testing.T) {
 	// A device that was never enrolled.
 	s2, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	pt, _ := json.Marshal(protocol.Msg{Kind: protocol.KindSend, Task: "phone-dispatch", Body: "hi"})
-	stranger, _ := envelope.Seal(pt, s2, "dev-stranger00", r.relay.Mac.ID, r.relay.Mac.Box.PublicKey(), r.now.UnixMilli())
+	stranger, _ := envelope.Seal(pt, s2, envelope.Route{From: "dev-stranger00", To: r.relay.Mac.ID}, r.relay.Mac.Box.PublicKey(), r.now.UnixMilli())
 	r.store.PutEnvelope(context.Background(), *stranger, r.now)
 
 	// An enrolled device id, signed by someone else's key.
-	forged, _ := envelope.Seal(pt, s2, r.device.ID, r.relay.Mac.ID, r.relay.Mac.Box.PublicKey(), r.now.UnixMilli())
+	forged, _ := envelope.Seal(pt, s2, envelope.Route{From: r.device.ID, To: r.relay.Mac.ID}, r.relay.Mac.Box.PublicKey(), r.now.UnixMilli())
 	r.store.PutEnvelope(context.Background(), *forged, r.now)
 	r.tick()
 	// The stranger is kept for one round in case it's a phone paired a
@@ -371,7 +371,7 @@ func TestPicksUpPhonesPairedAfterStart(t *testing.T) {
 	r.store.PutDevice(context.Background(), r.relay.Mac.ID, dev2.ID, dev2.SignPub)
 
 	pt, _ := json.Marshal(protocol.Msg{Kind: protocol.KindSend, Task: "phone-dispatch", Body: "hi from the new phone"})
-	e, _ := envelope.Seal(pt, s2, dev2.ID, r.relay.Mac.ID, r.relay.Mac.Box.PublicKey(), r.now.UnixMilli())
+	e, _ := envelope.Seal(pt, s2, envelope.Route{From: dev2.ID, To: r.relay.Mac.ID}, r.relay.Mac.Box.PublicKey(), r.now.UnixMilli())
 	r.store.PutEnvelope(context.Background(), *e, r.now)
 	r.tick()
 	if len(r.flow.sent) != 1 {

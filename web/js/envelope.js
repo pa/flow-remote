@@ -71,8 +71,9 @@ async function sealKey(priv, peer, epkRaw, recipRaw) {
 }
 
 // seal encrypts plaintext (a string) to the recipient's box key (base64url)
-// and signs it with the sender's sign key.
-export async function seal(plaintext, signKey, from, to, recipientBoxPub, ts = Date.now()) {
+// and signs it with the sender's sign key. from and to are device or Mac
+// ids, as in Go's envelope.Route.
+export async function seal(plaintext, signKey, { from, to }, recipientBoxPub, ts = Date.now()) {
   const recipRaw = unb64u(recipientBoxPub);
   const recip = await importBoxPub(recipientBoxPub);
   const eph = await subtle.generateKey(ECDH, false, ["deriveBits"]);

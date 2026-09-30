@@ -322,7 +322,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v45";
+const BUILD = "v46";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -1474,7 +1474,7 @@ async function forgetEverything() {
 // ---- messaging ----
 
 function sealToMac(p, msg) {
-  return seal(JSON.stringify(msg), p.keys.sign.privateKey, p.device_id, p.mac_id, p.mac_box_pub);
+  return seal(JSON.stringify(msg), p.keys.sign.privateKey, { from: p.device_id, to: p.mac_id }, p.mac_box_pub);
 }
 
 async function send(p, task, body, replyTo) {

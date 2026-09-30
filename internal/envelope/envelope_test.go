@@ -32,7 +32,7 @@ func newParty(t *testing.T) party {
 func TestSealVerifyOpen(t *testing.T) {
 	phone, mac := newParty(t), newParty(t)
 	now := time.Now().UnixMilli()
-	e, err := Seal([]byte("hello mac"), phone.sign, "dev-1", "mac", mac.box.PublicKey(), now)
+	e, err := Seal([]byte("hello mac"), phone.sign, Route{From: "dev-1", To: "mac"}, mac.box.PublicKey(), now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestSealVerifyOpen(t *testing.T) {
 func TestTamperIsRejected(t *testing.T) {
 	phone, mac := newParty(t), newParty(t)
 	fresh := func() *Envelope {
-		e, err := Seal([]byte("x"), phone.sign, "dev-1", "mac", mac.box.PublicKey(), time.Now().UnixMilli())
+		e, err := Seal([]byte("x"), phone.sign, Route{From: "dev-1", To: "mac"}, mac.box.PublicKey(), time.Now().UnixMilli())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -76,7 +76,7 @@ func TestTamperIsRejected(t *testing.T) {
 
 func TestWrongSignerAndWrongRecipient(t *testing.T) {
 	phone, mac, other := newParty(t), newParty(t), newParty(t)
-	e, _ := Seal([]byte("x"), phone.sign, "dev-1", "mac", mac.box.PublicKey(), time.Now().UnixMilli())
+	e, _ := Seal([]byte("x"), phone.sign, Route{From: "dev-1", To: "mac"}, mac.box.PublicKey(), time.Now().UnixMilli())
 	if err := Verify(e, &other.sign.PublicKey); !errors.Is(err, ErrSignature) {
 		t.Fatalf("other signer verified: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestWrongSignerAndWrongRecipient(t *testing.T) {
 // the signature check were skipped.
 func TestHeaderBoundIntoCiphertext(t *testing.T) {
 	phone, mac := newParty(t), newParty(t)
-	e, _ := Seal([]byte("x"), phone.sign, "dev-1", "mac", mac.box.PublicKey(), time.Now().UnixMilli())
+	e, _ := Seal([]byte("x"), phone.sign, Route{From: "dev-1", To: "mac"}, mac.box.PublicKey(), time.Now().UnixMilli())
 	e.To = "mac-2"
 	if _, err := Open(e, mac.box); !errors.Is(err, ErrDecrypt) {
 		t.Fatalf("spliced header opened: %v", err)
@@ -106,7 +106,7 @@ func TestGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	seal := func(ts time.Time) *Envelope {
-		e, _ := Seal([]byte("x"), phone.sign, "dev-1", "mac", mac.box.PublicKey(), ts.UnixMilli())
+		e, _ := Seal([]byte("x"), phone.sign, Route{From: "dev-1", To: "mac"}, mac.box.PublicKey(), ts.UnixMilli())
 		return e
 	}
 

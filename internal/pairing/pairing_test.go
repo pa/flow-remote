@@ -58,7 +58,7 @@ func (p phone) enroll(t *testing.T, o Offer, secret []byte, now time.Time, edit 
 	}
 	macBox, _ := envelope.ParseBoxPub(o.MacBoxPub)
 	pt, _ := json.Marshal(en)
-	e, err := envelope.Seal(pt, signer, p.deviceID, o.MacID, macBox, now.UnixMilli())
+	e, err := envelope.Seal(pt, signer, envelope.Route{From: p.deviceID, To: o.MacID}, macBox, now.UnixMilli())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -333,7 +333,7 @@ func (r *Relay) sendTo(ctx context.Context, dev identity.Device, m protocol.Msg)
 		return err
 	}
 	pt, _ := json.Marshal(m)
-	e, err := envelope.Seal(pt, r.Mac.Sign, r.Mac.ID, dev.ID, box, r.now().UnixMilli())
+	e, err := envelope.Seal(pt, r.Mac.Sign, envelope.Route{From: r.Mac.ID, To: dev.ID}, box, r.now().UnixMilli())
 	if err != nil {
 		return err
 	}

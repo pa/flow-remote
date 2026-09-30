@@ -29,5 +29,5 @@ export async function enrollmentEnvelope(offer, identity, deviceId, name, now = 
   const en = { kind: "enroll", pair_id: offer.pair_id, device_id: deviceId, name, ...pub };
   const hkey = await subtle.importKey("raw", unb64u(offer.secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   en.mac = b64u(await subtle.sign("HMAC", hkey, macInput(en)));
-  return seal(JSON.stringify(en), identity.sign.privateKey, deviceId, offer.mac_id, offer.mac_box_pub, now);
+  return seal(JSON.stringify(en), identity.sign.privateKey, { from: deviceId, to: offer.mac_id }, offer.mac_box_pub, now);
 }
