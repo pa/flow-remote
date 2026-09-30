@@ -334,7 +334,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v54";
+const BUILD = "v56";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -1014,7 +1014,16 @@ function sessionsScreen(p) {
 // A message whose last attempt went wrong.
 const BAD = ["refused", "failed", "stale"];
 // How long the main screen keeps showing where your last message is.
-const WAIT_MS = 12 * 3600_000;
+const WAIT_MS = 3600_000;
+// flow-remote can't see whether a session has read a message, only whether
+// it answered. For this long after delivery, an unanswered message is
+// "waiting in the session's inbox"; after that, all it can honestly say is
+// "no reply yet": the session may have read it and had nothing to say.
+const FRESH_MS = 15 * 60_000;
+
+// recent reports whether a delivered message is still recent enough to be
+// called waiting.
+const recent = (it) => Date.now() - it.ts < FRESH_MS;
 
 // homeContext gathers what the main screen's rows need: this computer's
 // messages, its live sessions in flow's order, the sessions that have only
@@ -1058,7 +1067,8 @@ function awaiting(home, slug) {
 function sessionRow(home, slug, { sub = "", chip, cls, marks = {}, where = "" }) {
   const n = unreadCount(home.p.mac_id, slug);
   const o = home.awaiting(slug);
-  const busy = o && !BAD.includes(o.state) ? " busy" : "";
+  // The dot pulses while a message is on its way or freshly delivered.
+  const busy = o && !BAD.includes(o.state) && (o.state !== "delivered" || recent(o)) ? " busy" : "";
   return h("button", { class: "row", onclick: () => openThread(slug) },
     h("div", { class: "top" },
       h("span", { class: `dot ${cls}${busy}`, title: chip, "aria-label": chip }),
@@ -1091,9 +1101,11 @@ const whereOf = (s) => [s.project, (s.tags || []).map((t) => "#" + t).join(" ")]
 // pendingLine says where your unanswered message to a session is.
 function pendingLine(home, o) {
   const n = home.waitingCount(o.task);
-  return h("span", { class: `pending${BAD.includes(o.state) ? " bad" : ""}` }, {
+  const tone = BAD.includes(o.state) ? " bad" : o.state === "delivered" && !recent(o) ? " quiet" : "";
+  return h("span", { class: `pending${tone}` }, {
     sending: "Sending…", queued: "Waiting for the computer to be reachable", sent: "Sent, waiting for the computer",
-    delivered: n > 1 ? `${n} messages waiting in the session's inbox` : "In the session's inbox · waiting for a reply",
+    delivered: !recent(o) ? "No reply yet"
+      : n > 1 ? `${n} messages waiting in the session's inbox` : "In the session's inbox · waiting for a reply",
   }[o.state] || "Not delivered · open to see why");
 }
 
@@ -1342,6 +1354,7 @@ function outNote(it, waiting) {
   if (it.state === "queued") return { text: "waiting for the computer to be reachable" };
   if (it.state === "resent") return { text: "sent again below" };
   if (waiting.length && it === waiting[waiting.length - 1]) {
+    if (!recent(it)) return { text: "no reply yet" };
     return { queued: true, text: waiting.length > 1 ? `${waiting.length} waiting in the session's inbox` : "waiting in the session's inbox" };
   }
   return {};

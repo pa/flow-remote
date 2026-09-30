@@ -122,7 +122,9 @@ html.kb-open .composer { padding-bottom: 6px; }
 
 .logo { width: 56px; height: 56px; border-radius: 13px; display: block; margin: 8px auto 0; }
 .brand { background: var(--wave); -webkit-background-clip: text; background-clip: text; color: transparent; }
-.bar { background: rgba(29, 30, 34, 0.92); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
+/* Solid, not blurred: a backdrop blur re-renders what scrolls under the
+   header on every frame, and at 92% opacity it barely showed. */
+.bar { background: rgb(29, 30, 34); }
 .them { background: rgba(255, 255, 255, 0.07); border-color: transparent; }
 button.primary:active { filter: brightness(0.9); }
 .center-text { text-align: center; display: flex; flex-direction: column; gap: 6px; }
@@ -214,9 +216,14 @@ main { will-change: auto; }
 .section.wait { color: var(--ok); }
 .pending { padding-left: 16px; font-size: 12.5px; color: var(--accent); }
 .pending.bad { color: var(--bad); }
-.dot.busy { background: var(--accent); opacity: 1; box-shadow: 0 0 0 0 rgba(10, 132, 255, 0.5); animation: busy 1.6s ease-out infinite; }
-@keyframes busy { 0% { box-shadow: 0 0 0 0 rgba(10, 132, 255, 0.55); } 100% { box-shadow: 0 0 0 7px rgba(10, 132, 255, 0); } }
-@media (prefers-reduced-motion: reduce) { .dot.busy { animation: none; } }
+/* The pulse is a ring scaled with transform and faded with opacity, which
+   the compositor animates without repainting. Animating box-shadow instead
+   repainted every frame, for as long as a session was busy. */
+.dot.busy { background: var(--accent); opacity: 1; box-shadow: none; position: relative; }
+.dot.busy::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: rgb(10, 132, 255);
+  animation: busy 1.6s ease-out infinite; }
+@keyframes busy { from { transform: scale(1); opacity: 0.55; } to { transform: scale(2.75); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .dot.busy::after { animation: none; opacity: 0; } }
 .bubble.tappable { cursor: pointer; }
 .bubble.tappable:active { filter: brightness(1.25); }
 .msg.flash .bubble { animation: flash 1.2s ease-out; }
@@ -325,3 +332,6 @@ input, textarea, select { font-size: max(16px, 1em) !important; }
 
 /* The search bar's clear button is always in the page, hidden with no query. */
 .searchbar .clear[hidden] { display: none; }
+
+/* "No reply yet": nothing is happening, so it isn't in the accent colour. */
+.pending.quiet { color: var(--muted); }
