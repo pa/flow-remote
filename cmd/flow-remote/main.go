@@ -567,8 +567,12 @@ func run(ctx context.Context) error {
 
 	r := &relay.Relay{
 		Mac: mac, Devices: devs, Guard: guard, State: state, Audit: audit, Log: log,
-		Flow: flowcli.CLI{},
+		Flow: flowcli.CLI{}, Update: availableUpdate,
 	}
+	if n := updateNotice(); n != "" {
+		log.Info(n)
+	}
+	go checkForUpdates(ctx, log)
 	return runLocal(ctx, cfg, r, log)
 }
 

@@ -149,6 +149,9 @@ func agentStatus() error {
 		}
 		fmt.Printf("serving:     %s (tunnel %s)\n", url, cfg.Tunnel)
 	}
+	if n := updateNotice(); n != "" {
+		fmt.Printf("update:      %s\n", n)
+	}
 	log := filepath.Join(home(), "relay.log")
 	if b, err := os.ReadFile(log); err == nil {
 		lines := strings.Split(strings.TrimSpace(string(b)), "\n")

@@ -28,6 +28,7 @@ const state = {
   sessions: {}, // mac_id -> [session]
   macSeen: {}, // mac_id -> Date | null
   unreachable: {}, // mac_id -> true while that Mac doesn't answer at all
+  updates: {}, // mac_id -> a newer flow-remote release that Mac could install
   view: "sessions",
   task: null,
   offer: null,
@@ -322,7 +323,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v46";
+const BUILD = "v47";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -540,9 +541,11 @@ function bar(title, { back, sub, backCount, action } = {}) {
 }
 
 // The gear in the top-right corner, so Settings is never below a long list.
+// It carries a dot when that computer has an update to install.
 function settingsButton(p) {
+  const update = state.updates[p.mac_id];
   return h("button", {
-    class: "icon-btn", "aria-label": "Settings",
+    class: `icon-btn${update ? " has-update" : ""}`, "aria-label": update ? `Settings, ${update} available` : "Settings",
     onclick: () => { sendSync(p); go("settings"); },
   }, svgIcon("M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"));
 }
@@ -1395,6 +1398,7 @@ function settingsScreen() {
       h("p", {}, "Computer id: ", h("code", {}, p.mac_id)),
       h("p", {}, "This phone, for this computer: ", h("code", {}, p.device_id)),
       h("p", {}, "Fingerprint: ", h("code", { class: "fp" }, p.device_fp)),
+      updateNote(p),
       h("button", { class: "danger", onclick: () => unpair(p) }, "Unpair from this computer"),
       h("p", { class: "muted" }, "Unpairing deletes this phone's key for that computer and keeps its messages. Also run ",
         h("code", {}, `flow-remote revoke ${p.device_id}`), " on it."))),
@@ -1403,6 +1407,16 @@ function settingsScreen() {
       h("button", { class: "link", onclick: forgetEverything }, "Delete everything on this phone"),
       storageLine()),
     aboutSection());
+}
+
+// updateNote tells you to upgrade flow-remote on a computer that has a
+// newer release waiting. The phone's app follows on its own afterwards.
+function updateNote(p) {
+  const update = state.updates[p.mac_id];
+  if (!update) return null;
+  return h("div", { class: "update-note" },
+    h("p", {}, h("b", {}, `flow-remote ${update} is out.`), " On this computer, run:"),
+    cmd("flow-remote upgrade"));
 }
 
 const kb = (n) => (n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
@@ -1451,6 +1465,7 @@ function aboutSection() {
 async function unpair(p) {
   state.pairings = state.pairings.filter((x) => x !== p);
   delete state.sessions[p.mac_id];
+  delete state.updates[p.mac_id];
   if (state.active === p.mac_id) state.active = state.pairings[0]?.mac_id || null;
   await savePairings();
   if (state.pairings.length === 0) {
@@ -1466,7 +1481,7 @@ async function forgetEverything() {
   if (!confirm("Delete every pairing and all message history from this phone?")) return;
   stopPolling();
   await db.forget();
-  Object.assign(state, { pairings: [], active: null, sessions: {}, macSeen: {}, unreachable: {} });
+  Object.assign(state, { pairings: [], active: null, sessions: {}, macSeen: {}, unreachable: {}, updates: {} });
   itemsCache = [];
   go("welcome");
 }
@@ -1571,10 +1586,13 @@ const onMessage = {
     sendSync(p);
     render();
   },
-  // The sessions running there now.
+  // The sessions running there now, and a newer flow-remote release if
+  // the computer's last check found one.
   async sessions(p, m) {
     state.sessions[p.mac_id] = m.sessions || [];
+    state.updates[p.mac_id] = m.update || "";
     await db.set(`sessions:${p.mac_id}`, state.sessions[p.mac_id]);
+    await db.set(`update:${p.mac_id}`, state.updates[p.mac_id]);
   },
   // How far one of your messages got. A delivered reply marks the message
   // it answers as replied.
@@ -1776,7 +1794,10 @@ async function loadState() {
   }
   state.pairings = pairings;
   state.active = (await db.get("active")) || pairings[0]?.mac_id || null;
-  for (const p of pairings) state.sessions[p.mac_id] = (await db.get(`sessions:${p.mac_id}`)) || [];
+  for (const p of pairings) {
+    state.sessions[p.mac_id] = (await db.get(`sessions:${p.mac_id}`)) || [];
+    state.updates[p.mac_id] = (await db.get(`update:${p.mac_id}`)) || "";
+  }
   itemsCache = await db.allItems();
 }
 

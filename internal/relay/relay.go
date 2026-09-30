@@ -58,6 +58,9 @@ type Relay struct {
 	Audit   io.Writer
 	Log     *slog.Logger
 	Now     func() time.Time
+	// Update, if set, returns a newer flow-remote release, or "". Phones
+	// hear about it with the session list.
+	Update func() string
 
 	sessionsHash string
 	sessionsAt   time.Time
@@ -274,14 +277,18 @@ func (r *Relay) syncSessions(ctx context.Context, force bool) error {
 			WaitingOn: t.WaitingOn, CanSend: true,
 		})
 	}
-	b, _ := json.Marshal(sessions)
+	msg := protocol.Msg{Kind: protocol.KindSessions, Sessions: sessions}
+	if r.Update != nil {
+		msg.Update = r.Update()
+	}
+	b, _ := json.Marshal(msg)
 	sum := sha256.Sum256(b)
 	h := hex.EncodeToString(sum[:])
 	if !force && h == r.sessionsHash {
 		return nil
 	}
 	r.sessionsHash = h
-	return r.broadcast(ctx, protocol.Msg{Kind: protocol.KindSessions, Sessions: sessions})
+	return r.broadcast(ctx, msg)
 }
 
 func (r *Relay) forwardMail(ctx context.Context) error {

@@ -308,3 +308,11 @@ main { will-change: auto; }
 .chatsearch .clear { margin-left: 2px; }
 mark.hit { background: rgba(255, 214, 10, 0.35); color: inherit; border-radius: 3px; padding: 0 1px; }
 mark.hit.now { background: #ffd60a; color: #1d1e22; }
+
+/* An update waiting on the computer: a dot on the gear, a note in Settings. */
+.icon-btn.has-update { position: relative; }
+.icon-btn.has-update::after { content: ""; position: absolute; top: 6px; right: 6px; width: 8px; height: 8px;
+  border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--bg); }
+.update-note { border-left: 3px solid var(--accent); background: rgba(255, 255, 255, 0.04);
+  border-radius: 10px; padding: 8px 10px; margin: 10px 0; }
+.update-note p { margin: 0 0 6px; }

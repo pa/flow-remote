@@ -436,3 +436,22 @@ func TestAge(t *testing.T) {
 		}
 	}
 }
+
+// A newer release goes out with the session list, even when the list
+// itself hasn't changed.
+func TestSessionsCarryAnUpdate(t *testing.T) {
+	r := newRig(t)
+	update := ""
+	r.relay.Update = func() string { return update }
+	r.tick()
+	update = "v9.9.9"
+	r.now = r.now.Add(sessionsEvery + time.Second)
+	r.tick()
+	var got []string
+	for _, m := range byKind(r.inbox(), protocol.KindSessions) {
+		got = append(got, m.Update)
+	}
+	if len(got) == 0 || got[len(got)-1] != "v9.9.9" {
+		t.Fatalf("session lists carried updates %q; want the last to be v9.9.9", got)
+	}
+}
