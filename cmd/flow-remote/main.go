@@ -345,7 +345,9 @@ Generate auth key, with:
   - Ephemeral:     off   (it would vanish whenever the computer sleeps)
   - Tags:          on, tag:flow-remote   (missing? step 2 wasn't saved)
   - Pre-approved:  on, if it's shown
-Select Generate key and copy it. It starts with tskey-auth- and is shown once.`},
+Select Generate key and copy it. It starts with tskey-auth- and is shown once.
+The key is for this computer only. Sign your phone in to Tailscale with your
+own account, never with this key: a tagged phone can't reach flow-remote.`},
 	}
 	fmt.Println("\nflow-remote joins your tailnet as its own device. First, three settings in")
 	fmt.Println("the Tailscale admin console (you need to be an Owner or Admin there).")

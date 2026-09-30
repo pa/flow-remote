@@ -126,7 +126,9 @@ off".
 ## 5. Pair your phone
 
 1. Install the Tailscale app on the phone, sign in to the same tailnet, and
-   turn it on.
+   turn it on. Sign in with your own account, never with the auth key from
+   setup: a phone tagged `tag:flow-remote` counts as a server, not as one of
+   your devices, and the policy won't let it reach the computer.
 2. On the computer, run `flow-remote pair`. It shows a QR code for 2
    minutes (`--png FILE` saves it as an image as well).
 3. **First time on an iPhone:**
