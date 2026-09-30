@@ -334,7 +334,7 @@ async function savePairings() {
 // BUILD must match CACHE in sw.js. Settings shows it, so it's clear which
 // version a phone is running: an installed iOS app doesn't reload when a
 // new one is deployed.
-const BUILD = "v49";
+const BUILD = "v50";
 
 // The keyboard is "up" exactly while the message box has focus. On a phone
 // that's when iOS shows the keyboard. Guessing it from heights failed in
@@ -1141,8 +1141,8 @@ async function openThread(task) {
     }
   }
   itemsCache = await db.allItems();
-  const pending = [...items].reverse().find((it) => it.dir === "in" && !it.replied && !it.broadcast);
-  go("thread", { task, replyTo: pending ? { id: pending.flow_id, body: pending.body } : null, tsearch: false, tquery: "" });
+  // A new message isn't a reply unless you pick one: tap or swipe it.
+  go("thread", { task, replyTo: null, tsearch: false, tquery: "" });
 }
 
 // threadScreen is one chat: its messages, and the field to send more.
@@ -1644,11 +1644,8 @@ const onMessage = {
       urgent: Boolean(mail.urgent), broadcast: Boolean(mail.broadcast), reply_to: mail.reply_to || null,
       read: inThread, replied: false,
     });
-    // In the open thread, offer to answer what just arrived; anywhere
-    // else, say it arrived.
-    if (inThread) {
-      if (!mail.broadcast && !state.replyTo) state.replyTo = { id: mail.flow_id, body: mail.body };
-    } else if (!mail.broadcast && Date.now() - mail.created_at < 10 * 60_000) {
+    // Outside the open thread, say it arrived.
+    if (!inThread && !mail.broadcast && Date.now() - mail.created_at < 10 * 60_000) {
       showToast({ mac: p.mac_id, task: mail.task, body: mail.body });
     }
   },
