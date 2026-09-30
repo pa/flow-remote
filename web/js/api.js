@@ -47,26 +47,40 @@ export async function signHeaders(method, path, body, id, key, ts = Date.now()) 
   return { "X-FR-Key": id, "X-FR-TS": String(ts), "X-FR-Sig": b64u(sig) };
 }
 
+// call makes one API request, signed as signer unless it's null, and
+// returns the decoded answer.
 async function call(signer, method, path, body, base = signer?.base ?? "") {
   const raw = body ? enc.encode(JSON.stringify(body)) : new Uint8Array();
   const headers = body ? { "Content-Type": "application/json" } : {};
   if (signer) Object.assign(headers, await signHeaders(method, path, raw, signer.id, signer.key));
-  // A Mac that's asleep or off the tailnet may not answer at all; give up
-  // so the app can say it's unreachable instead of waiting.
+  const res = await fetchOrNetError(base + path, { method, headers, body: body ? raw : undefined, cache: "no-store" });
+  if (!res.ok) throw new ApiError(res.status, await errorText(res));
+  return res.status === 204 || res.status === 202 ? null : res.json();
+}
+
+// fetchOrNetError fetches url, turning a failure to connect into a
+// NetError. A Mac that's asleep or off the tailnet may not answer at all;
+// giving up lets the app say it's unreachable instead of waiting. A quick
+// failure means the name didn't resolve (Tailscale off); a slow one, that
+// nothing answered.
+async function fetchOrNetError(url, init) {
   const started = performance.now();
-  let res;
   try {
-    res = await fetch(base + path, { method, headers, body: body ? raw : undefined, cache: "no-store", signal: AbortSignal.timeout(TIMEOUT_MS) });
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) });
   } catch (e) {
     const quick = performance.now() - started < QUICK_MS;
     throw new NetError(e?.name !== "TimeoutError" && quick ? "unresolved" : "timeout");
   }
-  if (!res.ok) {
-    let msg = `${res.status}`;
-    try { msg = (await res.json()).error || msg; } catch {}
-    throw new ApiError(res.status, msg);
+}
+
+// errorText is the error an API response gives, or its status code when
+// the body isn't the usual {"error": ...}.
+async function errorText(res) {
+  try {
+    return (await res.json()).error || `${res.status}`;
+  } catch {
+    return `${res.status}`;
   }
-  return res.status === 204 || res.status === 202 ? null : res.json();
 }
 
 export const signerFor = (pairing) => ({ id: pairing.device_id, key: pairing.keys.sign.privateKey, base: pairing.mailbox || "" });
